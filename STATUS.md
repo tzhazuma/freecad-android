@@ -3475,3 +3475,140 @@ context 创建**可能还有第二处需要改。
 | **29** | **🎉 GUI 在真机完整运行 —— 软链清空 bug + Coin EGL API + 应用图标** |
 
 **保持目标 active。**
+
+---
+
+# 🎉🎉🎉 第 30 轮：**打开文档的 SIGSEGV 修复 + GitHub 仓库与 Release 发布**
+
+## 一、打开文档崩溃的根因与修复
+
+### 崩溃序列（真机抓取）
+
+```
+[spp] checkVersionMigration OK                        ← 17 步启动完整通过
+Cannot find EGLConfig, returning null config          ← ★★ 根因 ★★
+Coin warning in cc_glglue_instance(): Error when setting up the GL context.
+→ signal 11 (SIGSEGV)
+```
+
+### 根因
+
+`src/Gui/Quarter/QuarterWidget.cpp:156-163` —— **3D 视图控件自己的 `QSurfaceFormat`**：
+
+```cpp
+// 修复前
+surfaceFormat.setRenderableType(QSurfaceFormat::OpenGL);            // ← 桌面 GL！
+surfaceFormat.setProfile(QSurfaceFormat::CompatibilityProfile);
+surfaceFormat.setOption(QSurfaceFormat::DeprecatedFunctions, true);
+setFormat(surfaceFormat);
+```
+
+Android 的 EGL **只有 OpenGL ES**。请求 `QSurfaceFormat::OpenGL` 会让 Qt 以
+`EGL_RENDERABLE_TYPE = EGL_OPENGL_BIT` 调用 `eglChooseConfig` → **返回 0 个配置**
+→ `Cannot find EGLConfig, returning null config` → 3D 视图拿不到 GL 上下文
+→ Coin3D 在 `cc_glglue_instance()` 里崩溃。
+
+**这是第 25 轮在 `Application.cpp` 修过的同一个 bug，但这是第二处** ——
+3D 视图控件设置自己的 format，因此需要自己的修复。
+
+### 修复
+
+```cpp
+#if defined(__ANDROID__)
+        surfaceFormat.setRenderableType(QSurfaceFormat::OpenGLES);
+        surfaceFormat.setProfile(QSurfaceFormat::NoProfile);
+#else
+        surfaceFormat.setRenderableType(QSurfaceFormat::OpenGL);
+        surfaceFormat.setProfile(QSurfaceFormat::CompatibilityProfile);
+        surfaceFormat.setOption(QSurfaceFormat::DeprecatedFunctions, true);
+#endif
+```
+
+### 验证（vivo PA2573 / Mali-G925 / Android 16）
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| `Cannot find EGLConfig` | 有 | **0** ✅ |
+| `cc_glglue_instance` 警告 | 有 | **0** ✅ |
+| `signal 11` | 崩溃 | **0** ✅ |
+| 进程 | 退出 | **存活（pid 持续）** ✅ |
+
+## 二、GitHub 仓库与 Release
+
+| 项 | 值 |
+|---|---|
+| 仓库 | https://github.com/tzhazuma/freecad-android |
+| 分支 | `main`，HEAD `62379b9` |
+| 文件 | 4856 个（含 assets 与图标） |
+| Release | https://github.com/tzhazuma/freecad-android/releases/tag/v0.1.0 |
+| 资产 | `app-release.apk` **298.6 MB**，state=uploaded |
+| 签名 | `CN=FreeCAD for Android, OU=Unofficial Port, O=tzhazuma`（专用 release 密钥，**非 debug**） |
+
+**密钥库在仓库外**（`~/.freecad-android-keys/`，密码 chmod 600），绝不入库。
+`build.gradle` 在密钥库缺失时回退到 debug 签名，保证全新克隆仍可 `assembleRelease`。
+
+### `.gitignore` 的两个坑（已修正）
+
+1. **`jniLibs/**/*.so` 被锚定到仓库根**，而实际路径是 `android-app/jniLibs/...`
+   → 改为 `**/jniLibs/**/*.so` + `**/*.so`。
+2. **`src/` 会匹配任意层级的 `src` 目录** → 把 `android-app/app/src/`（Java 源码、
+   Manifest、res、assets）全部忽略掉，仓库里只剩 35 个文件。
+   → 改为 `/src/` 锚定根目录；`Qt/`、`dl/`、`prefix/`、`backup/`、`runtime-bundle/` 同样处理。
+
+## 三、并行子智能体调研结论
+
+### Octave（用户询问）
+
+**有可用路径，最佳是 Termux：**
+- `pkg install octave` —— Termux 提供 **Octave 11.3.0**（"only CLI"），**aarch64 受支持**
+- 依赖齐全：openblas、suitesparse、arpack-ng、fftw、glpk、qhull、qrupdate-ng、sundials、hdf5
+- **Fortran 不用 gfortran，而用 LLVM `flang-new`**（`termux_setup_flang`）
+- 容器路线（proot-distro / UserLAnd）也可行，但 Octave 官方 wiki 指出
+  Termux 原生安装「性能明显更好」
+- **官方不提供 Android 二进制**；所有路线都是第三方的
+- 原生 NDK 交叉编译 octave-cli **未找到现代成功案例**（只有 2013 年的 corbinlc/octave4android）
+
+来源：[Octave wiki: Android](https://wiki.octave.org/Android)、[termux-packages octave build.sh](https://raw.githubusercontent.com/termux/termux-packages/master/packages/octave/build.sh)
+
+### deepseek-harness → Termux（用户询问）
+
+**关键发现**：npm 上的 `deepseek-harness` 是**第三方抢注名**，真正的包是
+**`@deepseek-ai/dsh`**（v0.2.0-rc.2，`bin: {dsh: "lib/bin.js"}`）。
+
+- **无 `os`/`cpu`/`engines` 限制，无 postinstall** —— 不按平台设门槛
+- **但 7 个原生 `.node` 全是 darwin-arm64**；`node-addon-require-builtin@0.1.6`
+  的 optionalDeps 只有 darwin/linux-gnu/win32 —— **没有 android/bionic** → **主要障碍**
+- `dsh plugin` 依赖 **pnpm** 在 PATH 上
+- **Termux 的 adb 可以自调试本机**（无线调试 + `127.0.0.1`，无需 root）：
+  ```sh
+  pkg install android-tools
+  adb pair 127.0.0.1:37000 <屏幕上的配对码>
+  adb connect 127.0.0.1:38000
+  adb shell getprop ro.build.version.release
+  ```
+  配对持久，连接端口每次会话变化，锁屏/重启会断连。
+
+来源：[F-Droid Termux](https://f-droid.org/packages/com.termux/)、[Termux Wiki: Node.js](https://wiki.termux.com/wiki/Node.js)
+
+### Blender（用户询问，第 29 轮已完成）
+
+**已有活跃的社区移植**：[blenderandroid.github.io](https://blenderandroid.github.io/) ——
+Blender 5.3.0 Alpha，两个分支（[simfeo/blender](https://github.com/simfeo/blender) 广兼容、
+[Wanderson-Magalhaes/blender_for_android](https://github.com/Wanderson-Magalhaes/blender_for_android) 全功能）。
+要求 arm64 + Android 12+ + **Vulkan（无 OpenGL 回退）**。关键线索：**Blender 官方已发布
+Android 预编译库集**。APK 已下载至 `dl/blender-lite.apk`（193.8 MB）。
+
+## 四、当前状态
+
+| 能力 | 状态 |
+|---|---|
+| 编译 / 装配 / 启动 | ✅✅✅ |
+| GUI 界面渲染 | ✅ 真机可用 |
+| 工作台激活 | ✅ 17 步全通过 |
+| **打开文档** | ✅✅ **不再崩溃**（本轮修复） |
+| 3D 视图渲染 | ⏳ 待视觉确认（需解锁屏幕查看） |
+| GitHub 仓库 + Release | ✅ **已发布** |
+| Octave | ✅ 调研完成（Termux 路线可用） |
+| deepseek-harness → Termux | ✅ 调研完成（原生模块是障碍） |
+
+**保持目标 active。**
