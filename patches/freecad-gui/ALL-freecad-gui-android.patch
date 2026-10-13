@@ -12821,6 +12821,35 @@ index e89cdd6..dc2cdec 100644
          QString name = QApplication::translate(
              std::string {style.first.getName()}.c_str(),
              style.second.c_str()
+diff --git a/src/Gui/Quarter/QuarterWidget.cpp b/src/Gui/Quarter/QuarterWidget.cpp
+index a301ace..f98b329 100644
+--- a/src/Gui/Quarter/QuarterWidget.cpp
++++ b/src/Gui/Quarter/QuarterWidget.cpp
+@@ -153,9 +153,24 @@ public:
+         // request a compatibility profile. On llvmpipe, this still seems to
+         // "just work" even if out of spec; on proprietary Nvidia drivers, it
+         // does not.
++        // Android-port: Android's EGL exposes OpenGL ES only. There is no EGL config
++        // with EGL_OPENGL_BIT, so requesting QSurfaceFormat::OpenGL here makes Qt call
++        // eglChooseConfig with EGL_RENDERABLE_TYPE = EGL_OPENGL_BIT, which returns zero
++        // configs. Qt then logs
++        //   Cannot find EGLConfig, returning null config
++        // the 3D view never gets a GL context, and Coin3D segfaults inside
++        // cc_glglue_instance() shortly afterwards. gl4es translates Coin's desktop-GL
++        // calls onto the ES surface Qt creates, so an ES surface is what must be asked
++        // for. This is the same correction Application.cpp needed for the main window's
++        // default format; the 3D view widget sets its own format and so needs its own.
++#if defined(__ANDROID__)
++        surfaceFormat.setRenderableType(QSurfaceFormat::OpenGLES);
++        surfaceFormat.setProfile(QSurfaceFormat::NoProfile);
++#else
+         surfaceFormat.setRenderableType(QSurfaceFormat::OpenGL);
+         surfaceFormat.setProfile(QSurfaceFormat::CompatibilityProfile);
+         surfaceFormat.setOption(QSurfaceFormat::DeprecatedFunctions, true);
++#endif
+ 
+ #if defined (_DEBUG) && 0
+         surfaceFormat.setOption(QSurfaceFormat::DebugContext);
 diff --git a/src/Gui/StartupProcess.cpp b/src/Gui/StartupProcess.cpp
 index 4f87ca6..60d3f48 100644
 --- a/src/Gui/StartupProcess.cpp

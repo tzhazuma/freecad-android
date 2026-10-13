@@ -45,9 +45,34 @@ android {
         noCompress 'so', 'zip'
     }
 
+    // The release keystore and its password live OUTSIDE the repository, under
+    // ~/.freecad-android-keys/, so they can never be committed by accident. When they
+    // are absent -- a fresh clone, or CI without the secret -- the release build falls
+    // back to the debug key so that `assembleRelease` still yields an installable APK.
+    // A debug-signed build must not be distributed: it shares Android's public debug
+    // key with every other debug build on the device.
+    signingConfigs {
+        release {
+            def ksDir  = new File(System.getProperty("user.home"), ".freecad-android-keys")
+            def ksFile = new File(ksDir, "freecad-release.jks")
+            def pwFile = new File(ksDir, "keystore.password")
+            if (ksFile.exists() && pwFile.exists()) {
+                storeFile     = ksFile
+                storePassword = pwFile.text.trim()
+                keyAlias      = "freecad"
+                keyPassword   = pwFile.text.trim()
+            }
+        }
+    }
+
     buildTypes {
-        debug   { minifyEnabled false }
-        release { minifyEnabled false; signingConfig = signingConfigs.debug }
+        debug { minifyEnabled false }
+        release {
+            minifyEnabled false
+            signingConfig = signingConfigs.release.storeFile != null
+                    ? signingConfigs.release
+                    : signingConfigs.debug
+        }
     }
 }
 
