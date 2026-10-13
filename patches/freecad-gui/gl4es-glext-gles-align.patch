@@ -1,0 +1,29 @@
+--- include/GL/glext.h.orig	2026-10-13 05:58:11
++++ include/GL/glext.h	2026-10-13 06:23:20
+@@ -5497,7 +5497,10 @@
+ GLAPI GLboolean APIENTRY glIsProgram (GLuint program);
+ GLAPI GLboolean APIENTRY glIsShader (GLuint shader);
+ GLAPI void APIENTRY glLinkProgram (GLuint program);
+-GLAPI void APIENTRY glShaderSource (GLuint shader, GLsizei count, const GLchar* *string, const GLint *length);
++/* Android-port: GLES spells this parameter `const GLchar *const*`; the mismatch is a
++ * conflicting-declaration error when a TU includes both gl4es' <GL/gl.h> and the
++ * platform <GLES2/gl2.h>. */
++GLAPI void APIENTRY glShaderSource (GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length);
+ GLAPI void APIENTRY glUseProgram (GLuint program);
+ GLAPI void APIENTRY glUniform1f (GLint location, GLfloat v0);
+ GLAPI void APIENTRY glUniform2f (GLint location, GLfloat v0, GLfloat v1);
+@@ -5591,7 +5594,13 @@
+ typedef GLboolean (APIENTRYP PFNGLISPROGRAMPROC) (GLuint program);
+ typedef GLboolean (APIENTRYP PFNGLISSHADERPROC) (GLuint shader);
+ typedef void (APIENTRYP PFNGLLINKPROGRAMPROC) (GLuint program);
+-typedef void (APIENTRYP PFNGLSHADERSOURCEPROC) (GLuint shader, GLsizei count, const GLchar* *string, const GLint *length);
++/* Android-port: use the OpenGL ES spelling of this typedef. FreeCAD's GUI code includes
++ * both gl4es' desktop <GL/gl.h> (for Coin) and the platform <GLES2/gl2.h> (for Qt) in the
++ * same translation unit, and the two spellings differ only in const placement:
++ *   GLES: void (*)(GLuint, GLsizei, const GLchar *const*, const GLint *)
++ *   here: void (*)(GLuint, GLsizei, const GLchar **,      const GLint *)
++ * which C++ treats as a redefinition error. Matching ES removes the conflict. */
++typedef void (APIENTRYP PFNGLSHADERSOURCEPROC) (GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length);
+ typedef void (APIENTRYP PFNGLUSEPROGRAMPROC) (GLuint program);
+ typedef void (APIENTRYP PFNGLUNIFORM1FPROC) (GLint location, GLfloat v0);
+ typedef void (APIENTRYP PFNGLUNIFORM2FPROC) (GLint location, GLfloat v0, GLfloat v1);

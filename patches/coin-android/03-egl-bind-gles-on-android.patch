@@ -1,0 +1,79 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index bfd4cfb..08e4bb9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -261,6 +261,21 @@ else()
+     list(APPEND COIN_TARGET_INCLUDE_DIRECTORIES ${X11_INCLUDE_DIR})
+     list(APPEND COIN_TARGET_LINK_LIBRARIES ${X11_LIBRARIES})
+   endif()
++  # Android-port: Android ships OpenGL ES (libGLESv2), never desktop OpenGL, so
++  # find_package(OpenGL REQUIRED) cannot succeed and OPENGL_gl_LIBRARY has no meaning.
++  # Point Coin's dynamic loader at libGLESv2.so instead, and treat GLES as the GL
++  # implementation. Note this only makes configure succeed; the renderer still needs a
++  # GLES-safe draw path (immediate mode is absent from GLES).
++  if(ANDROID)
++    set(HAVE_OPENGL 1)
++    set(HAVE_GLES 1)
++    set(OPENGL_SYSTEM_LIBRARY_NAME "libGLESv2.so")
++    set(OPENGL_INCLUDE_DIR "${CMAKE_ANDROID_NDK}/toolchains/llvm/prebuilt/${ANDROID_HOST_TAG}/sysroot/usr/include")
++    if(COIN_BUILD_EGL)
++      set(HAVE_EGL 1)
++      list(APPEND COIN_TARGET_LINK_LIBRARIES_GL GLESv2 EGL)
++    endif()
++  else()
+   find_package(OpenGL REQUIRED)
+   if(OPENGL_FOUND)
+     set(HAVE_OPENGL 1)
+@@ -296,6 +311,7 @@ else()
+       endif()
+     endif()
+   endif()
++  endif()   # ANDROID branch
+ endif()
+ 
+ list(APPEND COIN_TARGET_LINK_LIBRARIES ${COIN_TARGET_LINK_LIBRARIES_GL})
+diff --git a/include/Inventor/system/gl-headers.h.cmake.in b/include/Inventor/system/gl-headers.h.cmake.in
+index fe15760..3be41b6 100644
+--- a/include/Inventor/system/gl-headers.h.cmake.in
++++ b/include/Inventor/system/gl-headers.h.cmake.in
+@@ -77,6 +77,11 @@
+ #  include "glue/khronos/GL/glext.h"
+ 
+ #else
++/* NOTE (Android port): on Android the build points -I at gl4es' include directory, so
++ * the <GL/gl.h> below resolves to gl4es' desktop-GL-compatible header set. Do NOT
++ * include <GLES3/gl3.h> here: that would declare the GLES API instead, and Coin's
++ * fixed-function / immediate-mode calls would fail to compile. gl4es supplies both the
++ * headers (compile time) and libGL.so (runtime, a GL 1.5 -> GLES translation). */
+ # if defined(_WIN32)
+ #  include <windows.h>
+ #  include <GL/gl.h>
+diff --git a/src/glue/gl_egl.cpp b/src/glue/gl_egl.cpp
+index 8feb509..0c7b17a 100644
+--- a/src/glue/gl_egl.cpp
++++ b/src/glue/gl_egl.cpp
+@@ -349,9 +349,22 @@ eglglue_init(cc_glglue * w)
+     return;
+   }
+ 
+-  if (!eglglue_bind_api(EGL_OPENGL_API)) {
++  // Android-port: Android's EGL exposes OpenGL ES only. Real drivers reject
++  // EGL_OPENGL_API with EGL_BAD_PARAMETER -- Mali does so outright, and only the
++  // emulator's ANGLE stack tolerated it, which is why this went unnoticed until the
++  // build ran on actual hardware. Binding EGL_OPENGL_ES_API is also what gl4es
++  // requires: it translates Coin's fixed-function/compatibility API onto the ES
++  // surface that Qt created, so the ES API is the one that must be bound here.
++#if defined(__ANDROID__)
++  const EGLenum coin_wanted_api = EGL_OPENGL_ES_API;
++#else
++  const EGLenum coin_wanted_api = EGL_OPENGL_API;
++#endif
++  if (!eglglue_bind_api(coin_wanted_api)) {
+     cc_debugerror_post("eglglue_init",
+-                       "eglBindAPI(EGL_OPENGL_API) failed. %s",
++                       "eglBindAPI(%s) failed. %s",
++                       coin_wanted_api == EGL_OPENGL_ES_API ? "EGL_OPENGL_ES_API"
++                                                            : "EGL_OPENGL_API",
+                        eglErrorString(eglGetError()));
+     return;
+   }

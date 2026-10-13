@@ -1,0 +1,14 @@
+--- include/Inventor/system/gl-headers.h.cmake.in.orig	2026-10-13 05:24:30
++++ include/Inventor/system/gl-headers.h.cmake.in	2026-10-13 05:34:18
+@@ -77,6 +77,11 @@
+ #  include "glue/khronos/GL/glext.h"
+ 
+ #else
++/* NOTE (Android port): on Android the build points -I at gl4es' include directory, so
++ * the <GL/gl.h> below resolves to gl4es' desktop-GL-compatible header set. Do NOT
++ * include <GLES3/gl3.h> here: that would declare the GLES API instead, and Coin's
++ * fixed-function / immediate-mode calls would fail to compile. gl4es supplies both the
++ * headers (compile time) and libGL.so (runtime, a GL 1.5 -> GLES translation). */
+ # if defined(_WIN32)
+ #  include <windows.h>
+ #  include <GL/gl.h>

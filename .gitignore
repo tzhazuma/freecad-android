@@ -1,0 +1,49 @@
+# Build trees
+build/
+
+# Qt for Android installation (multi-GB)
+/Qt/
+
+# Downloaded source tarballs / third-party archives
+/dl/
+
+# Android build outputs and packaged binaries
+*.apk
+*.aab
+
+# Prebuilt native libraries (cross-compiled, not source)
+**/jniLibs/**/*.so
+# Any other prebuilt native object shipped in the APK
+**/*.so
+
+# Gradle
+.gradle/
+local.properties
+
+# Logs
+*.log
+
+# Scratch screenshots (keep the committed PNGs)
+screenshots/*.tmp
+
+# macOS
+.DS_Store
+
+# Python virtualenvs used for build tooling
+.venv/
+.venv312/
+
+# Cross-compiled install prefix (NDK artifacts, multi-GB)
+/prefix/
+
+# Extracted third-party sources (OCCT, boost, gl4es, cpython, GLU)
+/src/
+
+# Assembled runtime bundle for packaging
+/runtime-bundle/
+
+# Stale backup archives
+/backup/
+
+# aqtinstall / Qt installer logs and caches
+aqtinstall.log

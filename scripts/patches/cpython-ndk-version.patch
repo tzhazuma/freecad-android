@@ -1,0 +1,14 @@
+--- src/cpython-3.13.7/Android/android-env.sh.orig	2026-10-13 00:16:33
++++ src/cpython-3.13.7/Android/android-env.sh	2026-10-13 00:16:33
+@@ -24,7 +24,10 @@
+ # * https://android.googlesource.com/platform/ndk/+/ndk-rXX-release/docs/BuildSystemMaintainers.md
+ #   where XX is the NDK version. Do a diff against the version you're upgrading from, e.g.:
+ #   https://android.googlesource.com/platform/ndk/+/ndk-r25-release..ndk-r26-release/docs/BuildSystemMaintainers.md
+-ndk_version=27.3.13750724
++# Patched for this port: CPython pins 27.3.13750724 and auto-installs it via sdkmanager,
++# but this SDK install has no cmdline-tools. Allow an override and default to the NDK
++# that is actually present; NDK 28 is API-compatible for this build.
++ndk_version="${NDK_VERSION:-28.2.13676358}"
+ 
+ ndk=$ANDROID_HOME/ndk/$ndk_version
+ if ! [ -e "$ndk" ]; then

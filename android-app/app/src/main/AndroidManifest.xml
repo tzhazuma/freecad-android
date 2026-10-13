@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:label="FreeCAD"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:extractNativeLibs="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              Qt's QtLoader reads this key and builds the library name as
+                <value>_<abi>  ->  FreeCADCmd_arm64-v8a  ->  libFreeCADCmd_arm64-v8a.so
+              That library must export main(); Qt calls it after setting up the
+              JNI/Android environment that QCoreApplication requires.
+            -->
+            <meta-data android:name="android.app.lib_name" android:value="FreeCAD" />
+
+            <!-- Arguments handed to main() as argv -->
+            <!-- The real test: drive FreeCAD's Python API through the Part workbench.
+               If this prints a volume, the whole port works end to end. -->
+            <meta-data android:name="android.app.arguments"
+                android:value="-M /data/data/org.freecad.android/files/Mod -M /data/data/org.freecad.android/files/Mod/Assembly -M /data/data/org.freecad.android/files/Mod/Draft -M /data/data/org.freecad.android/files/Mod/Import -M /data/data/org.freecad.android/files/Mod/Inspection -M /data/data/org.freecad.android/files/Mod/Material -M /data/data/org.freecad.android/files/Mod/Measure -M /data/data/org.freecad.android/files/Mod/Mesh -M /data/data/org.freecad.android/files/Mod/Part -M /data/data/org.freecad.android/files/Mod/PartDesign -M /data/data/org.freecad.android/files/Mod/Points -M /data/data/org.freecad.android/files/Mod/ReverseEngineering -M /data/data/org.freecad.android/files/Mod/Robot -M /data/data/org.freecad.android/files/Mod/Sketcher -M /data/data/org.freecad.android/files/Mod/Spreadsheet -M /data/data/org.freecad.android/files/Mod/Start -M /data/data/org.freecad.android/files/Mod/Surface -M /data/data/org.freecad.android/files/Mod/TechDraw -M /data/data/org.freecad.android/files/Mod/Web /data/data/org.freecad.android/files/share/examples/EngineBlock.FCStd" />
+
+            <!-- Qt's own metadata; harmless for a headless run -->
+            <meta-data android:name="android.app.background_running" android:value="false" />
+        </activity>
+    </application>
+</manifest>
