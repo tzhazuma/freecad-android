@@ -1,5 +1,7 @@
---- include/Inventor/system/gl-headers.h.cmake.in.orig	2026-10-13 05:24:30
-+++ include/Inventor/system/gl-headers.h.cmake.in	2026-10-13 05:34:18
+diff --git a/include/Inventor/system/gl-headers.h.cmake.in b/include/Inventor/system/gl-headers.h.cmake.in
+index fe15760..3be41b6 100644
+--- a/include/Inventor/system/gl-headers.h.cmake.in
++++ b/include/Inventor/system/gl-headers.h.cmake.in
 @@ -77,6 +77,11 @@
  #  include "glue/khronos/GL/glext.h"
  

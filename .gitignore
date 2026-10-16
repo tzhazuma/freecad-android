@@ -47,3 +47,16 @@ screenshots/*.tmp
 
 # aqtinstall / Qt installer logs and caches
 aqtinstall.log
+
+# Python standard library payload for the APK: a reproducible build artifact
+# (cross-compiled from src/cpython-3.11.9 into prefix/py311-arm64-v8a and copied
+# here by scripts/configure-freecad-gui-qt683.sh). ~176 MB, and it made the
+# 168 MB pack unpushable over a slow link. The shipped APK on the Releases page
+# carries it; a fresh clone rebuilds it from source.
+android-app/app/src/main/assets/pylib/
+
+# Packaged native libraries for the APK: build artifacts copied in by the build
+# scripts (and by the jniLibs swap step). The `**/*.so` rule above already covers
+# most of them, but versioned names such as libpython3.11.so.1.0 slipped through
+# and added 19 MB to the commit.
+android-app/jniLibs/

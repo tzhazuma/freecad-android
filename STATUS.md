@@ -3612,3 +3612,698 @@ Android 预编译库集**。APK 已下载至 `dl/blender-lite.apk`（193.8 MB）
 | deepseek-harness → Termux | ✅ 调研完成（原生模块是障碍） |
 
 **保持目标 active。**
+
+---
+
+## 第 31 轮：PySide6/Shiboken6 Android 官方 wheel 的重大发现（2026-10-14）
+
+### 结论摘要
+Qt 官方**确实**为 Android 发布了 PySide6/Shiboken6 预编译 wheel，且为 **abi3**（兼容我们内嵌的 Python 3.13）。
+但 wheel 内置 **Qt 6.12.0** 运行时库，与当前端口的 **Qt 6.6.3** 同名冲突，因此不能直接共存。
+
+### 已验证的硬事实（可复现）
+1. 仓库根：`https://download.qt.io/official_releases/QtForPython/`，含 `pyside6/` 与 `shiboken6/`。
+2. 命名分两个阶段：
+   - 6.8.0 … 6.10.3：`PySide6-<v>-<v>-cp311-cp311-android_aarch64.whl`（大写 P，**仅 cp311**）
+   - 6.11.0 … 6.11.2：`pyside6-<v>-<v>-cp311-cp311-android_aarch64.whl`
+   - **6.12.0：`pyside6-6.12.0-6.12.0-cp310-abi3-android_aarch64.whl`（abi3）**
+   - **没有任何 6.6.x / 6.7.x 的 Android wheel**（最早 6.8.0）
+3. 已下载并校验：
+   - `dl/pyside6-6.12.0-6.12.0-cp310-abi3-android_aarch64.whl` — **90,225,867 bytes**，zip 完整
+   - `dl/shiboken6-6.12.0-6.12.0-cp310-abi3-android_aarch64.whl` — **282,133 bytes**，zip 完整
+4. wheel 元数据：
+   - PySide6：`Requires-Python: >=3.10, <3.16`（**我们的 3.13 在范围内**）
+   - `Tag: cp310-abi3-android_aarch64`
+   - `Requires-Dist: shiboken6==6.12.0`
+5. PySide6 wheel 内含 FreeCAD 所需的**全部**模块：
+   QtCore / QtGui / QtWidgets / QtSvg / QtSvgWidgets / QtUiTools / QtNetwork /
+   QtOpenGL / QtOpenGLWidgets / QtConcurrent / QtPrintSupport / QtXml / QtStateMachine / QtSql / QtQml
+6. **CMake 配置齐备**（关键：可直接满足 FreeCAD 的 find_package）：
+   - `PySide6/lib/cmake/PySide6/{PySide6Config,PySide6Targets,PySide6ConfigVersion}.cmake`
+   - `shiboken6/lib/cmake/Shiboken6/{Shiboken6Config,Shiboken6Targets,ShibokenHelpers}.cmake`
+   - shiboken6 还带完整头文件 `shiboken6/include/shiboken6/*.h`
+7. **命名冲突（决定性）**：wheel 内置 Qt 库名为
+   `PySide6/Qt/lib/libQt6Core_arm64-v8a.so` —— 与我们现有 Qt 6.6.3 的
+   `Qt/6.6.3/android_arm64_v8a/lib/libQt6Core_arm64-v8a.so` **同名**。
+   同一个 APK 里只能存在一个 Qt 版本。
+
+### 关键阻塞：Qt 官方在线仓库没有 6.7+ 的 Android SDK
+在两个主机路径下穷举验证（HTTP 状态码实测）：
+- `linux_x64/android/` 仅含 `qt6_600 … qt6_663`，**6.7/6.8/6.9/6.10/6.11/6.12 全部不存在**
+- `mac_x64/android/` 同样封顶 `qt6_663`（目录日期 2024-03-22）
+- 直接探测 `qt6_670 / qt6_680 / qt6_683 / qt6_690 / qt6_6100 / qt6_6120` → **全部 HTTP 404**
+- 对照：`linux_x64/desktop/` **含 `qt6_6120`（6.12.0）**，说明在线仓库本身是新的，只有 Android 目标停更
+
+### 由此得到的候选路径
+- **路径 A**：用 `pyside6-android-deploy` 从源码为 Android 交叉编译 PySide6 6.6.x + shiboken6，
+  对齐现有 Qt 6.6.3。NDK r28c（我们已在用）正好是其要求。
+- **路径 B**：改用官方 6.12.0 abi3 wheel，但需要 Qt 6.12 Android SDK —— **在线仓库不可得**。
+- **路径 C**：依赖 Qt 6 的**前向二进制兼容承诺**（6.6 编译的代码可运行于 6.12 运行库）：
+  用 wheel 内的 Qt 6.12 运行库 + 现有 Qt 6.6.3 头文件编译的 FreeCAD Gui。风险待评估。
+- **路径 D**（立即收益）：给 PySide 导入加保护，让更多工作台无需 PySide 即可加载。
+
+### 下载经验
+`download.qt.io` 从本地区下载仅 ~20 KB/s（86 MB 需 1h15m）。
+改用 **`https://mirror.nju.edu.cn/qt/`（5.6 MB/s，快约 280 倍）** 后数秒完成。
+镜像测速：nju 5627 KB/s > ustc 5108 > tuna 3941 > aliyun 1842 > tencent 1737 > 官方 88 KB/s。
+
+### 设备状态（2026-10-14 验证）
+- `adb connect 10.20.164.160:33321` 成功，vivo PA2573 / Android 16 / arm64-v8a
+- FreeCAD 0.1.0 已安装，`files/Mod` = **25 项**、`pivy` 存在 → 第 30 轮的符号链接修复仍然有效
+
+### 第 31 轮补充：**Qt 6.7+ Android SDK 找到了 —— 路径是 `all_os`**（决定性突破）
+
+之前判定"Qt 官方在线仓库没有 6.7+ 的 Android SDK"是**错误的**，原因是查错了主机路径。
+
+**正确结论**：
+- `linux_x64/android/` 与 `mac_x64/android/` 确实只到 `qt6_663`（旧布局，Qt 6.7 起不再更新）
+- **`all_os/android/` 才是 Qt 6.7+ 的 Android 仓库**（Android 包与主机无关，故归入 `all_os`）
+- `all_os/android/` 实测含：`qt6_670 671 672 673 680 681 682 683 690 691 692 693 6100 6101 6102 6103 6110 6111 6112 6113 6120`
+
+**权威验证（aqtinstall 3.3.0）**：
+```
+$ aqt list-qt all_os android
+6.7.0 6.7.1 6.7.2 6.7.3
+6.8.0 6.8.1 6.8.2 6.8.3
+6.9.0 6.9.1 6.9.2 6.9.3
+6.10.0 6.10.1 6.10.2 6.10.3
+6.11.0 6.11.1 6.11.2 6.11.3
+6.12.0
+
+$ aqt list-qt all_os android --arch 6.8.3
+android_x86 android_arm64_v8a android_armv7 android_x86_64
+```
+安装命令：
+```
+aqt install-qt all_os android 6.8.3 android_arm64_v8a \
+  -O ~/freecad-android/Qt -b https://mirror.nju.edu.cn/qt/
+```
+注意：`-b` 的语义是"含 `online/` 目录的镜像根"，即 `https://mirror.nju.edu.cn/qt/`。
+
+### 子智能体 A 的关键纠正（二进制级证据，推翻了我先前的两个假设）
+1. **`cp310-abi3` ≠ 兼容 Python 3.13**。`llvm-readelf -d` 实测 DT_NEEDED：
+   - PySide6 **6.8.3** `QtCore.abi3.so` → `libpython3.11.so`
+   - PySide6 **6.11.2** `QtCore.abi3.so` → `libpython3.11.so`
+   - PySide6 **6.12.0** `QtCore.abi3.so` → **`libpython3.14.so`**
+   即 abi3 后缀具误导性，二进制仍硬链接带版本号的 libpython。
+   ⇒ 用官方 wheel 就必须把内嵌 Python 降到 **3.11**（6.8.x 线）或升到 3.14（6.12 线）。
+2. **SONAME 冲突已从 bionic 链接器源码层面证实**：`find_loaded_library_by_soname()` 用
+   `strcmp(name, si->get_soname())` 匹配，且忽略含 `/` 的名字；我们的 DT_NEEDED 是裸文件名，
+   因此 wheel 的 `libQt6Core_arm64-v8a.so` 与我们 Qt 6.6.3 的同名库**只能有一个生效**。
+   ⇒ 升级 Qt 不可避免（或改为对 Qt 6.6.3 源码编译 PySide6）。
+3. **FreeCAD 对 Qt6 次版本既无下限也无上限**：
+   `CMakeLists.txt:91` / `SetupQt.cmake:37` / `src/Gui/CMakeLists.txt:136` 的 find_package 均不带版本；
+   唯一的版本下限是 Qt5 时代的 `VERSION_LESS 5.15.0`。源码中最高守卫是 `QT_VERSION_CHECK(6,9,0)`；
+   `pixi.toml:61` 写 `qt6-main = ">=6.11,<6.12"`。故 **Qt 6.8 完全在支持范围内**。
+4. Qt 6.8 的 FreeCAD 侧差异可控：约 30 处 `QCheckBox::stateChanged` → `checkStateChanged`（已有守卫）；
+   `PythonWrapper.cpp:80` 的 `SHIBOKEN_FULL_VERSION >= 6.7.0` 分支会激活（正好在我们要走的绑定路径上）。
+   风险点：Qt 6.8 Android 起 "用 QLibrary 打开库时默认不再调用 JNI_OnLoad"。
+5. wheel 确实自带完整 Qt 运行时（6.8.3 含 145 个 `libQt6*.so` + android 平台插件；
+   6.12.0 含 156 个），且 `QtCore.abi3.so` 的 RUNPATH 为 `$ORIGIN:$ORIGIN/Qt/lib`。
+
+### 选定方案
+**Qt 6.6.3 → 6.8.3，内嵌 Python 3.13 → 3.11，使用 `PySide6-6.8.3-cp311` + `shiboken6-6.8.3-cp311`。**
+理由：Qt 跨度仅 2 个次版本（在 FreeCAD 守卫范围内）；Python 是我们自己构建的，属配置变更；
+6.8.x 是成熟线（7 个 Android wheel 修订）。6.12.0 线需 Qt 6.12 + Python 3.14，跨度 6 个次版本，风险高。
+
+### 第 31 轮最终决策：版本完全一致的 Qt 6.8.3 + Python 3.11 + PySide6 6.8.3
+
+三个并行子智能体给出决定性证据，推翻了此前的若干假设。
+
+#### 证据 1（最重要）：FreeCAD **不需要** shiboken6 参与构建
+- `cMake/FreeCAD_Helpers/SetupShibokenAndPyside.cmake:4-5` 定义两个开关；
+  同文件 `:96-100`/`:122-126` 在找不到时**自动降级为 OFF**（这解释了为何 CMakeCache 里写着 ON
+  而 `PySide6_DIR=PySide6_DIR-NOTFOUND`）。
+- 全树 `grep -rn "Shiboken::\|PySide::" src/` **只命中 `src/Gui/PythonWrapper.cpp` 一个文件**。
+- **FreeCAD 没有任何 shiboken 生成的 Python 模块**：`find . -name "*.xml" -path "*ypesystem*"` 零结果；
+  绑定全部是手写 PyCXX，由自家 `src/Tools/bindings/generate.py` 生成
+  （`cMake/FreeCadMacros.cmake:153-188`）。GUI 的 Python 模块是 `FreeCADGuiPy`
+  （`src/Main/CMakeLists.txt:129-138`），不含 shiboken。
+- `PythonWrapper.cpp:414-498` 提供**完整的 Python 回退实现**（运行时 `import shiboken6`，
+  调 `shiboken6.getCppPointer` / `wrapInstance`），每个包装函数都有两个分支。
+- ⇒ **`FREECAD_USE_SHIBOKEN=OFF` + `FREECAD_USE_PYSIDE=OFF` 可用，GUI 功能完整。**
+  代价：丢失 `Base::Quantity`⇄`QVariant` 转换器、`WrapperManager` 的 QObject 生命周期保护、
+  `setParent` 与部分类型查找快路径。**但 `shiboken6`/`PySide6` 仍必须在运行时可导入。**
+- 这同时绕开了 `cMake/FindPySide6.cmake:17-37` 的硬性检查
+  （PySide6 与 Qt 的 major.minor 不一致会直接 `FATAL_ERROR`）。
+
+#### 证据 2：`pyside6-android-deploy` **不能**编译绑定，无法用于 Qt 6.6.3
+- 它只接受现成 wheel：`sources/pyside-tools/android_deploy.py:25-27` 要求
+  `--wheel-pyside` 与 `--wheel-shiboken`，`:112-114` 找不到就报错。
+- 配方只是解压 wheel：`recipes/shiboken6/__init__.tmpl.py:17-21` 就是 `zipfile.extractall`。
+- 因为**根本不存在 6.6.x 的 Android wheel**（最早 6.8.0），此路不通。
+- 真正能交叉编译的是未文档化的 `tools/cross_compile_android/main.py`（v6.6.3 中存在），
+  但它硬编码 Linux x86_64 主机、NDK r25c、目标 Python 3.10，
+  且 `toolchain_default.tmpl.cmake` 无条件传 `-msse4.2 -mpopcnt`（我们的 NDK r28c clang 19
+  实测 `error: unsupported option '-mpopcnt' for target 'aarch64-linux-android31'`）。
+  ⇒ 在 macOS 上不可行（6.8.0+ 才支持 macOS 主机）。
+
+#### 证据 3：工作台 PySide 依赖的精确审计（静态分析 + 与端口自身日志互证）
+- 24 个目录中只有 **21 个有 `InitGui.py`**（`Plot`/`Show`/`Web` 没有，永远无法作为工作台激活）；
+  只有 15 个真正调用 `Gui.addWorkbench`。
+- **今天无需 PySide 即可加载并激活的只有 12 个**：Import, Inspection, Material, Measure,
+  Mesh, Points, ReverseEngineering, Robot, Spreadsheet, Start, Surface, Test。
+- **6 个完全死掉**：AddonManager、Draft、Help、Tux（`exec` 阶段即失败）、
+  Assembly、PartDesign（`Initialize()` 阶段失败）。
+  端到端日志里那三条 "No module named 'PySide6'" 正是 `Draft_rc` / `Help_rc` / `Tux_rc`。
+- 3 个部分可用（命令组静默丢失）：Part、Sketcher、TechDraw。
+- **最小保护集（8 处语句）即可让 16/21 完整可加载**：
+  1. `PartDesign/InvoluteGearFeature.py:26,:32` + `PartDesign/SprocketFeature.py:30`（3 处 → 修复 PartDesign）
+  2. `Help/Help_rc.py:3`（1 处 → 修复 Help）
+  3. `Draft/InitGui.py:257,:258`（2 处 → 修复 Draft）
+  4. `Tux/InitGui.py:28,:35` 包 try/except（2 处 → 修复 Tux）
+- **pivy 完全不需要 PySide**（`import pivy` 只拉 `.pivy_meta` 和 `.coin`），不阻塞任何东西。
+
+#### 证据 4：Qt 前向二进制兼容性（用于"混用"方案的可行性评估）
+- Qt 官方承诺（https://doc.qt.io/qt-6/qt-releases.html）：
+  "an application compiled against Qt 6.0.0 should still run with any other Qt 6 release"，
+  但**前提是同一工具链、同一系统环境、同一 Qt 构建配置**。
+- 实测：构建树 43 个 `.so` 引用的 4,666 个 Qt 版本化未定义符号中，**4,662 个**能被 wheel 内
+  Qt 6.12 库的 104,622 个已定义符号解析；剩余 4 个是 libc++ 符号，由 `libc++_shared.so` 提供。
+- 风险：wheel 的 Qt 6.12 `.note.android.ident` 要求 **minSdk ≥ 28**（我们 31，OK）；
+  `qt_blurImage` 从 `libQt6Widgets` 移到了 `libQt6Gui`（靠 `libFreeCADGui.so` 直接依赖 Qt6Gui 才解析到）；
+  Qt 插件版本检查**不会**拒绝旧的 6.6.3 插件，必须整组换成新版本。
+- 结论：可行但属"混用"，**不如直接把 Qt 升到 6.8.3 干净**。
+
+#### 最终选定栈（全部版本对齐）
+| 组件 | 版本 | 状态 |
+|---|---|---|
+| Qt for Android | **6.8.3** (`all_os/android`, arm64_v8a) | ✅ 已装（381 MB，31 秒） |
+| Qt host (macOS) | 6.8.3 clang_64 | ⏳ 安装中 |
+| 内嵌 Python | **3.11**（cp311 wheel 要求 `libpython3.11.so`） | 待重建 |
+| PySide6 | 6.8.3 cp311 | 待下载 |
+| shiboken6 | 6.8.3 cp311 | 待下载 |
+| FreeCAD 构建 | Qt 6.8.3，`FREECAD_USE_SHIBOKEN=OFF`/`FREECAD_USE_PYSIDE=OFF` | 待重建 |
+
+理由：Qt 6.8 在 FreeCAD 支持范围内（无版本下限/上限，最高源码守卫 6.9，`pixi.toml` 写 `>=6.11,<6.12`）；
+6.8.3 与 PySide6 6.8.3 版本完全一致，不存在 SONAME/ABI 混用问题；
+不需要 shiboken 参与构建，规避了版本匹配的硬性 FATAL_ERROR。
+6.12 线需 Python 3.14 且超出 FreeCAD 守卫范围，风险更高。
+
+#### 安装命令备忘
+```
+# Android 目标
+aqt install-qt all_os android 6.8.3 android_arm64_v8a \
+  -O ~/freecad-android/Qt -b https://mirror.nju.edu.cn/qt/
+# host 工具
+aqt install-qt mac desktop 6.8.3 clang_64 \
+  -O ~/freecad-android/Qt -b https://mirror.nju.edu.cn/qt/
+# PySide6 / shiboken6（cp311）
+curl -O https://mirror.nju.edu.cn/qt/official_releases/QtForPython/pyside6/PySide6-6.8.3-6.8.3-cp311-cp311-android_aarch64.whl
+curl -O https://mirror.nju.edu.cn/qt/official_releases/QtForPython/shiboken6/shiboken6-6.8.3-6.8.3-cp311-cp311-android_aarch64.whl
+```
+
+---
+
+## 第 32 轮：为 Qt 6.8.3 + PySide6 6.8.3 重建 Python 3.11（进行中）
+
+### 为什么必须换 Python 版本
+官方 Android wheel 的二进制硬链接带版本号的 libpython（用 NDK 的 `llvm-readelf -d` 实测）：
+| wheel | `DT_NEEDED` |
+|---|---|
+| PySide6 **6.8.3** `QtCore.abi3.so` | `libpython3.11.so` |
+| shiboken6 **6.8.3** `libshiboken6.abi3.so` | `libpython3.11.so` |
+| PySide6 **6.12.0** `QtCore.abi3.so` | `libpython3.14.so` |
+
+`abi3` 后缀具误导性：模块名是 `*.abi3.so`，但仍硬链接版本化的 libpython。
+我们的内嵌 Python 是 3.13（提供 `libpython3.13.so`），**不满足**任何官方 wheel。
+
+实测把 6.8.3 的 abi3 模块绑到 3.13 的可行性：
+QtCore.abi3.so 引用 114 个 `Py*` 符号，`libpython3.13.so` 能满足 108 个，
+**缺 6 个全是 datetime C API**（`PyDateTimeAPI`、`PyDateTime_FromDateAndTime`、
+`PyDate_FromDate`、`PyTime_FromTime`、`PyDateTime_Get`）——
+说明该 wheel 在 datetime 上并未走 limited API。故放弃 shim 方案，直接换 Python 3.11。
+
+### Python 3.11 能否交叉编译到 Android
+| 分支 | `Android/android.py` |
+|---|---|
+| 3.11 | **HTTP 404**（无官方脚本） |
+| 3.12 | **HTTP 404** |
+| 3.13 | HTTP 200 |
+| 3.14 | HTTP 200 |
+
+但 `--with-build-python` 在 3.11 的 `configure.ac` 中**存在**（出现 4 次），
+而本端口 3.13 用的本来就是手工 `configure`（`src/cpython-3.13.7/cross-build-x`），
+**不是** `android.py`。所以 3.11 可复用同一条配方。
+
+### 3.13 的原始成功配方（从 config.status 提取，逐字）
+```
+--build=aarch64-apple-darwin --host=aarch64-linux-android
+--with-build-python=/opt/homebrew/opt/python@3.13/bin/python3.13
+--enable-shared --without-ensurepip --disable-test-modules
+--prefix=/Users/azuma/freecad-android/prefix/arm64-v8a
+CC=<ndk>/aarch64-linux-android24-clang   CXX=<ndk>/aarch64-linux-android24-clang++
+AR=<ndk>/llvm-ar                          RANLIB=<ndk>/llvm-ranlib
+```
+`Modules/Setup.local` 未做任何自定义（只有默认注释行）。
+
+### 3.11 踩的三个坑（已解决）
+1. **`configure: error: readelf for the host is required for cross builds`**
+   CPython 3.11 的 `configure.ac:1636-1643`：
+   ```m4
+   AC_CHECK_TOOLS([READELF], [readelf], [:])
+   if test "$cross_compiling" = yes; then
+       case "$READELF" in readelf|:) AC_MSG_ERROR([...]) ;; esac
+   fi
+   ```
+   它**故意拒绝**裸 `readelf`（怕用成宿主机的），要求 **target 前缀** 版本。
+   CPython 3.13 放宽了这个检查，所以 3.13 没踩到。
+   **解法**：造前缀软链
+   ```sh
+   ln -sf $NDKBIN/llvm-readelf /tmp/xtools/aarch64-linux-android-readelf
+   export PATH=/tmp/xtools:$PATH
+   ```
+2. **`configure: error: You must get working getaddrinfo() function ...`**
+   交叉编译时该测试要**运行**二进制，必然失败。3.13 的 configure 已能识别 Android 交叉编译，
+   3.11 不能，必须手工喂缓存答案。
+   **解法**：`CONFIG_SITE=/tmp/config.site`，内含 29 个 `ac_cv_*`（含 `ac_cv_buggy_getaddrinfo=no`、
+   `ac_cv_file__dev_ptmx=yes`、`ac_cv_file__dev_ptc=no`、`ac_cv_little_endian_double=yes`、
+   `ac_cv_func_getpgrp_void=yes`、`ac_cv_func_setpgrp_void=yes`、`ac_cv_pthread_is_default=yes`、
+   `ac_cv_posix_semaphores_enabled=yes`、`ac_cv_computed_gotos=yes`、`ac_cv_func_vfork=no` 等）。
+   ✅ 加此后 configure **通过**（`checking for getaddrinfo... (cached) yes`）。
+3. **宿主机缺 Python 3.11**：`--with-build-python` 要求版本严格一致，本机只有 3.12–3.15。
+   **解法**：`brew install python@3.11` → `/opt/homebrew/opt/python@3.11/bin/python3.11` (3.11.17)。
+
+### 3.11 构建参数（可复现）
+```sh
+brew install python@3.11
+cd ~/freecad-android/src/cpython-3.11.9   # 来自 dl/cpython-3.11.tgz (Python-3.11.9)
+mkdir -p cross-build-x && cd cross-build-x
+export PATH="/tmp/xtools:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/opt/homebrew/opt/binutils/bin"
+export CONFIG_SITE=/tmp/config.site        # 见上
+../configure --build=aarch64-apple-darwin --host=aarch64-linux-android \
+  --with-build-python=/opt/homebrew/opt/python@3.11/bin/python3.11 \
+  --enable-shared --without-ensurepip --disable-test-modules \
+  --prefix=$HOME/freecad-android/prefix/py311-arm64-v8a \
+  CC=$NDKBIN/aarch64-linux-android24-clang CXX=$NDKBIN/aarch64-linux-android24-clang++ \
+  AR=$NDKBIN/llvm-ar RANLIB=$NDKBIN/llvm-ranlib
+make -j6 && make install
+```
+注意 `readelf` 还需 `brew install binutils`（keg-only，路径 `/opt/homebrew/opt/binutils/bin`），
+否则 3.11 的 `AC_CHECK_TOOLS` 找不到任何 readelf。
+
+### 已就绪的其他组件
+- Qt **6.8.3** Android arm64-v8a：`~/freecad-android/Qt/6.8.3/android_arm64_v8a`（381 MB）
+  - `lib/cmake/Qt6/Qt6Config.cmake` ✅，90 个模块配置 ✅
+  - FreeCAD 所需模块全部齐备（Core/Gui/Widgets/Svg/SvgWidgets/UiTools/Network/OpenGL/
+    OpenGLWidgets/Concurrent/PrintSupport/Xml）——**不需要 Qt6StateMachine**
+    （全树 `StateMachine` 命中只是 Coin3D 自带的 SCXML 类与 `.qm` 翻译二进制，非 Qt 依赖）
+  - Android 平台插件 ✅ `plugins/platforms/libplugins_platforms_qtforandroid_arm64-v8a.so`
+- Qt 6.8.3 host (macOS clang_64)：`~/freecad-android/Qt/6.8.3/macos`
+  - 宿主工具在 **`libexec/`**（Qt6 惯例），不是 `bin/`：`libexec/{moc,rcc,uic}`
+- PySide6 **6.8.3** cp311 wheel：67.9 MB，含 145 个 `libQt6*`，zip 校验通过
+- shiboken6 **6.8.3** cp311 wheel：209 KB
+
+### 迁移脚本
+已写好 `scripts/configure-freecad-gui-qt683.sh`：Qt 6.8.3 + Python 3.11，
+并设 `FREECAD_USE_SHIBOKEN=OFF` / `FREECAD_USE_PYSIDE=OFF`
+（FreeCAD 无任何 shiboken 生成模块，`PythonWrapper.cpp` 有完整运行时回退；
+这同时绕开 `cMake/FindPySide6.cmake:17-37` 的 Qt/PySide 次版本不一致硬性 FATAL_ERROR）。
+
+### 待办
+1. 等 Python 3.11 编译安装完成
+2. 跑 `scripts/configure-freecad-gui-qt683.sh`
+3. 重建 `libFreeCADGui.so` 等 Qt 依赖库
+4. 把 PySide6/shiboken6 6.8.3 解包进 APK，替换 libpython3.13.so → libpython3.11.so
+5. 在模拟器上验证工作台加载
+
+---
+
+## 第 33 轮：**Qt 6.8.3 + Python 3.11 的 FreeCAD GUI 编译成功** ✅
+
+```
+✅✅✅ libFreeCADGui.so 编译成功！  299.6 MB（未 strip）
+✅ libCoin.so 46.5 MB，DT_NEEDED = libEGL.so libGL.so libGLESv2.so libGLU.so
+   （与旧的成功构建完全一致）
+```
+
+### 迁移过程中逐个解决的 9 个阻塞点
+用「把旧构建树 `build/freecad-gui-probe` 的 CMakeCache 当作权威参考、逐项对比」
+的方法定位。写成了 `scripts/configure-freecad-gui-qt683.sh`。
+
+| # | 报错 | 真因 | 解法 |
+|---|---|---|---|
+| 1 | `Could NOT find yaml-cpp` | 我漏掉了主依赖 prefix | `CMAKE_PREFIX_PATH` 加回 `prefix/arm64-v8a` |
+| 2 | 同上仍失败 | 旧树设了 `CMAKE_FIND_ROOT_PATH`，NDK 工具链把 `find_package` 限制在该 root 内 | 加 `-DCMAKE_FIND_ROOT_PATH`（与 PREFIX_PATH 同值） |
+| 3 | `please set the QT_HOST_PATH cache variable` | Qt 6.8 对交叉编译的 Qt 强制要求 host Qt | 加 `-DQT_HOST_PATH=$ROOT/Qt/6.8.3/macos` |
+| 4 | `Could NOT find pybind11` | `BUILD_CAM` 默认 **ON**，而 `InitializeFreeCADBuildOptions.cmake:228` 在 `BUILD_CAM OR BUILD_FLAT_MESH` 时打开 `FREECAD_USE_PYBIND11` | `-DBUILD_CAM=OFF`（并固定全部工作台开关） |
+| 5 | `Could NOT find VTK`（SalomeSMESH） | `BUILD_MESH_PART` 默认 **ON** → `FREECAD_USE_SMESH` ON | `-DBUILD_MESH_PART=OFF` |
+| 6 | `Could NOT find X11`（`3rdParty/coin:260`） | `COIN_BUILD_GLX` 默认 **ON** | `-DCOIN_BUILD_GLX=OFF -DCOIN_BUILD_EGL=ON` |
+| 7 | `Could NOT find Python`（`3rdParty/pivy:68`） | pivy 用的是**旧式** `find_package(Python)`，不是 `Python3` | 同时设 `Python_EXECUTABLE/INCLUDE_DIR/LIBRARY` |
+| 8 | `Could NOT find GTest` | `ENABLE_DEVELOPER_TESTS` 默认 ON | `-DENABLE_DEVELOPER_TESTS=OFF` |
+| 9 | `'GL/gl.h' file not found` | 旧树把 gl4es/GLU 头目录放在 `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS` 里 | 加 `-I$ROOT/src/gl4es-master/include -I$ROOT/src/GLU-master/include` |
+
+另外两个 Qt 6.8 特有的 rcc 问题：
+- `rcc: Zstandard support not compiled in` —— Qt 6.8.3 的 macOS host rcc **没编 zstd**，而
+  `SetupQt.cmake:80` 的 `FREECAD_RCC_COMPRESSION_ALGO` 默认 `zstd`
+- `rcc: invalid compression level '19'` —— 级别 19 是 **zstd** 的档位（`SetupQt.cmake:86-89`），
+  zlib 上限是 9
+⇒ `-DFREECAD_RCC_COMPRESSION_ALGO=zlib -DFREECAD_RCC_COMPRESSION_LEVEL=9`
+
+以及一个 Coin 链接问题：
+- `undefined symbol: glLightf` —— `patches/coin-android/01` 的 Android 分支只链 `GLESv2;EGL`，
+  但 Coin 的固定管线调用（`glLightf`、立即模式）由 **gl4es** 的 `libGL.so` 提供
+- `unable to find library -lGL` —— prefix 的 lib 目录不在链接搜索路径，必须用**全路径**
+⇒ 在 Android 分支追加 `${OPENGL_gl_LIBRARY}` / `${OPENGL_glu_LIBRARY}`（两者都是 cache FILEPATH，
+   指向 `prefix/arm64-v8a/lib/libGL.so` 与 `libGLU.so`），并 `set(HAVE_GLU 1)`
+   修好后 `libCoin.so` 的 DT_NEEDED 与旧成功构建**逐项一致**。
+
+### 方法论沉淀
+「新构建 vs 旧成功构建」的 `CMakeCache.txt` **布尔量 diff** 是定位这类迁移问题的利器：
+```
+for f in build/freecad-gui-probe build/freecad-gui-qt683; do
+  grep -E "^[A-Za-z0-9_]+:BOOL=" $f/CMakeCache.txt | sort > /tmp/$(basename $f).bool
+done
+diff /tmp/freecad-gui-probe.bool /tmp/freecad-gui-qt683.bool
+```
+最终只剩 10 处差异，且全部是有意为之（`FREECAD_USE_PYSIDE/SHIBOKEN=OFF`）或无害。
+同理要检查 `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS`、`CMAKE_FIND_ROOT_PATH`、`OPENGL_*`、
+以及**默认值不同**的选项（Qt 6.8/新源码把若干开关的默认值改了）。
+
+### 待办
+1. 编译其余 Qt 依赖目标（FreeCADGui 已过，还需 FreeCADApp / FreeCADGuiPy / 各 Mod）
+2. 把 PySide6/shiboken6 6.8.3 解包进 APK；`libpython3.13.so` → `libpython3.11.so`
+3. Qt 运行时库整体换到 6.8.3（含平台插件）
+4. 模拟器验证
+
+---
+
+## 第 34 轮：**Qt 6.8.3 + Python 3.11 + PySide6 6.8.3 的完整 GUI 在真机跑通** 🎉
+
+真机 vivo PA2573 / Android 16 / arm64-v8a，截图见
+`screenshots/qt683-mesh-workbench-running.png`：
+
+- 工作台选择器显示 **Mesh**（含图标）
+- **三行完整工具栏**全部渲染
+- 左侧 **Model 树**（View/Data 标签）、右侧 **Tasks 面板**
+  （Mesh Info Box / Number of points / Number of facets / Minimum·Maximum bound）
+- 状态栏 **Ready** / CAD / Dimension
+- **全部 StartupPostProcess 步骤通过**：
+  `showMainWindow OK → activateWorkbench OK → checkParameters OK → checkVersionMigration OK`
+- **SIGSEGV 次数 = 0**
+
+### 打包阶段的 6 个阻塞点（全部定位并解决）
+
+| # | 现象 | 真因 | 解法 |
+|---|---|---|---|
+| 1 | `JNI_ERR returned from JNI_OnLoad in libQt6Core` | `app/libs/Qt6Android.jar` 还是 **6.6.3**（134544 B），native 已换 6.8.3 | 换成 `Qt/6.8.3/.../jar/Qt6Android.jar`（154721 B） |
+| 2 | 38 个 Java 编译错 `找不到符号 serviceDelegate()` | `build.gradle:9` 的 `qtAndroidRoot` 仍指向 `Qt/6.6.3`，而 Qt 把 `QtActivity`/`QtLoader` 作为**源码**编进 app | 改为 `Qt/6.8.3/android_arm64_v8a` |
+| 3 | `QtLoader: Can't find libAssemblyApp.so` → `System.exit(0)` | Qt **6.8 的 QtLoader 变严格**：会按 `bundled_libs` 逐个 `lib<name>.so` 加载；工作台库叫 `AssemblyApp.so`（无 `lib` 前缀） | 用脚本筛 `bundled_libs`，只保留**确实存在 `lib<name>.so`** 的条目（103 → 67，移除 36 个工作台项）。**不能改名加 `lib` 前缀** —— Python `import Part` 要求文件名就是 `Part.so` |
+| 4 | `library "libpython3.11.so.1.0" not found: needed by libFreeCADApp.so` | CPython 3.11 的 SONAME 带 libtool 后缀 `.1.0`，**AGP 的 jniLibs 只打包 `**/*.so`**，静默丢掉了它 | 无需打包该文件：把 `python3.11` 移到 `bundled_libs` **首位**，让 `libpython3.11.so` 先加载，bionic 按 SONAME 去重后 FreeCAD 的 DT_NEEDED 即可解析 |
+| 5 | `library "libpython3.13.so" not found` | `libFreeCAD_arm64-v8a.so` / `libFreeCADCmd_arm64-v8a.so` 是**旧 Python 3.13 时手工链接的入口 shim** | 按 STATUS 第 5/9 轮的配方重建 GUI shim（`ninja -t commands` 取编译命令 + 注入 `-fPIC` + `llvm-objcopy --redefine-sym main=freecad_gui_main` + `-shared` 链接），改链 `libpython3.11.so`；GUI app 不需要 FreeCADCmd，直接移除该库与 `libs.xml` 条目 |
+| 6 | `ModuleNotFoundError: No module named 'freecad'` | dev 线新引入 `src/Ext/freecad` Python 包（`FreeCADInit.py:1276` `import freecad`），未部署 | 部署 `build/.../Ext/{freecad,PySide,lazy_loader}` 到 `assets/pylib/lib/python3.11/site-packages/`。**注意 `Ext/PySide` 就是 AddonManager 报错里说的「FreeCAD PySide wrapper」** |
+
+#### 第 6 点踩的「已知坑」二次复发
+`MainActivity.PY_ASSETS_VERSION` 注释里明确警告过：**改了 assets/pylib 必须升版本号**，
+否则解包标记命中 → 新文件永不落盘。这次 `freecad`/`PySide`/`lazy_loader` 加进去时
+版本号还是 `3`，于是 `site-packages` 里只有先加的 `PySide6`/`shiboken6`。
+→ 升到 `4`，同时把 `PY_VERSION_DIR` 从 `python3.13` 改成 `python3.11`。
+
+### 崩溃根因（fault address = 0x8 的完整推理链）
+
+**取证方法**：FreeCAD 自己的 `crashHandler` 抢在 debuggerd 之前处理 SIGSEGV，
+所以 logcat **没有** `fault addr` 行。改为读它写盘的 `.fcrash` 二进制报告，
+按 `Format.h:105 Header` 逐字段解码：
+
+```
+magic=FCCR ver=1  faultAddress=0x8  threadID=0x6e8e8dd3c0
+timestamp=1792052669  processID=12903  code=11(SIGSEGV)  fileSize=179
+```
+
+**`faultAddress = 0x8` 恰好是 `PyObject::ob_type` 的偏移** ⇒ 有人对 NULL 指针取了类型。
+再用 `llvm-symbolizer` 对本地**未 strip** 的库解 PC：
+
+```
+#04 pc 023bdefc libFreeCADBase   crashHandler (Writer.cpp:294)
+#07 pc 0020eb60 libpython3.11    object_recursive_isinstance (abstract.c:2618)
+#09 pc 02287714 libFreeCADBase   Py::_Unicode_Check(_object*)+16
+#10 pc 0104d224 libFreeCADGui    Py::Object::isString() (Objects.hxx:361) ← workbenchMenuText
+#11 ... WorkbenchGroup::refreshWorkbenchList → StdCmdWorkbench::createAction
+#19 ... WorkbenchManager::activate   ← 入口是 FreeCADGuiInit.py:554 activateWorkbench
+```
+
+关键发现：**PyCXX 的 `_Unicode_Check` 不是 `PyUnicode_Check` 宏**：
+
+```cpp
+// IndirectPythonInterface.cxx:66
+bool Py::_Unicode_Check(PyObject *op) { return _IsInstance(op, _Unicode_Type()) > 0; }
+// Objects.hxx:272  —— 完全不检查返回值，也不抛异常
+Object getAttr(const std::string &s) const {
+    return Object(PyObject_GetAttrString(p, ...), true);
+}
+```
+
+于是完整因果链：
+
+1. `workbenchIcon("NoneWorkbench")`：`hasAttr("Icon")` 为真 → `getAttr` 返回 **NULL**
+   → `Py::String data(member)` 抛出**既非 `Py::Exception` 也非 `std::exception`** 的类型
+   → 落进 `catch (...)`，**而该分支没有 `e.clear()`，Python 错误留在 pending**
+2. 紧接着 `workbenchMenuText`：`PyObject_GetAttrString` 见到已有 pending error，
+   **不碰参数立即返回 NULL** → `isString()` → `_IsInstance(NULL, PyUnicode_Type)`
+   → `object_recursive_isinstance` → `Py_TYPE(NULL)` 读 0x8 → **SIGSEGV**
+
+**两处修复**（`src/Gui/Application.cpp`）：
+- `workbenchIcon` 的 `catch (...)` 增加 `PyErr_Clear()`（根因：别让错误跨调用点存活）
+- `workbenchMenuText` 在 `isString()` 前加 `if (!member.ptr()) { PyErr_Clear(); }`（纵深防御）
+
+> 教训：**PyCXX 的 `getAttr`/`hasAttr` 不抛异常、静默返回 NULL**。
+> 任何直接使用其结果的代码都必须先判 `ptr()`。
+> 另外 `catch (...)` 是唯一一个拿不到 `e.clear()` 的分支，**必须自己 `PyErr_Clear()`**。
+
+### 其余已知（非致命）问题
+- `No module named 'defusedxml'` → AddonManager 依赖未打包（已捕获，工作台仍加载）
+- `No module named '_socket'` → CPython 3.11 交叉编译未生成 `_socket`（影响 Help 工作台）
+- `hashlib: code for hash blake2b/blake2s was not found` → `_blake2` 在 lib-dynload 里，
+  但 `_hashlib`(OpenSSL) 缺失导致 fallback 路径失败（`ERROR:root:` 级别，非致命）
+- `Draft: UI file does not exist` → 资源文件缺失
+- 3D 视口为空灰（空文档正常），**尚未验证真实模型渲染 / 鼠标交互**
+
+---
+
+## 第 35 轮：**Coin 的 GL 函数指针根因修复 —— SIGSEGV 彻底消除** ✅
+
+```
+T+25/45/65s  pidof=19187 稳定存活     signal11 = 0
+```
+（此前：打开含 3D 内容的文档必崩，栈为 `SoGLMultiTextureImageElement::updateGL+84 → pc 00000000`）
+
+### 定位过程（fault address 再次立功）
+崩溃 PC = `00000000` ⇒ **跳转到绝对地址 0**（调用 NULL 函数指针），不是数据空指针。
+栈：`SoNaviCube::renderCoin → SoSeparator::GLRenderBelowPath → SoTexture2::GLRender
+→ SoGLMultiTextureImageElement::set/updateGL → 0`。
+
+### 三层根因（逐层排除后命中）
+
+| 层 | 假设 | 验证 | 结论 |
+|---|---|---|---|
+| 1 | `OPENGL_SYSTEM_LIBRARY_NAME` 指错（`libGLESv2.so` 而非 gl4es `libGL.so`） | gl4es 导出 **1294** 个符号含 `glTexEnvfv`；NDK GLES2 只有 **202** 个且无 `glTexEnvfv` | **确有隐患，已修**，但不是本次崩溃主因（改后仍崩） |
+| 2 | gl4es 在 `LIBGL_NOTEST=1` 下不声明 `GL_ARB_multitexture`，导致 `glglue_init` 跳过赋值 | 读 `gl4es/src/gl/getter.c:BuildExtensionsList()` —— 该扩展**无条件**写入 | 排除 |
+| 3 | **`eglglue_getprocaddress()` 在 Android 上解析不到核心 GL 函数** | 读 `src/glue/gl_egl.cpp:725`：`return (void*)eglGetProcAddress(fname);` | ✅ **命中** |
+
+**根因**：EGL 规范只保证 `eglGetProcAddress()` 解析**扩展**入口；而 Coin 需要的是
+**核心**桌面 GL 函数（`glActiveTexture`/`glMultiTexCoord2f*`/`glTexEnv*`…）。
+于是 `glglue_init()` 里每个 `PROC()` 都拿到 NULL，整张函数指针表（`gl.cpp:935-940` 先全部置 NULL）
+从未被填充 → 首次带纹理的渲染跳转到 0。
+
+> 注意：`gl_egl.cpp:64` 那个 `return NULL` 的桩位于 `#ifndef HAVE_EGL`，**不是**我们走的分支
+> （我们 `COIN_BUILD_EGL=ON`，走 `#else` 的真实实现）——差点误判。
+
+### 修复（`src/3rdParty/coin/src/glue/gl_egl.cpp`，HAVE_EGL 分支）
+```cpp
+void * eglglue_getprocaddress(const cc_glglue * glue_in, const char * fname)
+{
+  void * ptr = (void *)eglGetProcAddress(fname);
+  if (ptr) return ptr;                    // 真正的 EGL 扩展优先
+  (void)glue_in;
+  return dlsym(RTLD_DEFAULT, fname);      // 核心 GL 回落到已链接的 gl4es
+}
+```
+gl4es 的 `libGL.so` 是 `libCoin.so` 的 `DT_NEEDED`，符号已在全局命名空间，`RTLD_DEFAULT` 可直接命中；
+这样拿到的也是 gl4es 的实现（而非裸 GLES2 原版）。同时补 `#include <dlfcn.h>`。
+
+**结果**：应用在真机上稳定存活，无 SIGSEGV，FreeCAD 完整界面（工作台选择器 / 三行工具栏 /
+Model 树 / Tasks 面板 / 状态栏）正常渲染。
+
+### 本轮另一个修复：Coin 运行时要打开的 GL 库
+`OPENGL_SYSTEM_LIBRARY_NAME` 从 `"libGLESv2.so"` 改为 `"libGL.so"`（见上表第 1 层）。
+`config.h:356` 已确认写入 `"libGL.so"`。
+
+### 尚存问题（已定位，非致命）
+1. **`Unknown exception while processing file: EngineBlock.FCStd`**
+   - 来自 `src/App/Application.cpp:3152` 的 `catch (...)` ⇒ 抛出的**不是** `Base::Exception`
+   - 已排除「缺工作台」：解析 `EngineBlock.FCStd` 的 `Document.xml`，对象类型只用
+     `App::*` / `Materials::PropertyMaterial` / `Part::*`，**全在已构建模块内**
+   - 时序：`cc_glglue_instance` 警告(.992) → 异常(.037)，间隔 45ms，属 3D 视图/纹理路径
+   - 后果：Model 树为空、视口空灰（文档未打开成功）
+2. **`cc_glglue_instance(): Error when setting up the GL context`（每次启动 1 次）**
+   - 出现在**执行 `[spp]` 的工作线程**上（无当前 GL 上下文），而 gl4es 初始化在 GL 线程
+   - 且 Coin 在 `gl.cpp:2253-2254` **先 `cc_dict_put` 缓存、后初始化**，失败的 glue 会被永久复用
+   - 现已不致命（函数指针靠 dlsym 兜住），但缓存的 `max_texture_size`/扩展等状态可疑
+   - **下一步候选修法**：把 `cc_dict_put` 移到初始化成功之后，避免缓存半成品 glue
+3. 非致命缺陷同前：`defusedxml`、`_socket`、`_hashlib`（blake2 回落失败）、Draft UI 文件
+
+### 存储清理
+删除 5 项过期产物（旧 Qt 6.6.3 树、旧 probe 构建树、configure-probe、host ICU 构建树、旧 shim）：
+**可用空间 9.7 GiB → 25 GiB（释放 15.3 GiB）**。
+
+---
+
+## 第 36 轮：**3D 视图空白的根因锁定 —— gl4es 与原生 GLES2 的符号冲突**
+
+### 当前实测状态（2026-10-16 11:41，真机 192.168.0.108:34963）
+
+| 项目 | 结果 |
+|---|---|
+| `pidof` | 14616 ✅ 存活 |
+| **SIGSEGV 次数** | **0** ✅ |
+| 启动步骤全通过 | ✅ |
+| 打开文档 | ❌ `Unknown exception while processing file` |
+| GL 上下文警告 | ⚠️ 1 次（非致命） |
+
+**关键**：换成 `PartDesignExample.FCStd` **仍报同样异常** ⇒ **不是文档问题，任何命令行打开文档都失败**。
+
+### 决定性证据：异常前两行
+
+```
+11:41:37.532 Errors linking simple shader: L0007 Fragment shader uses a varying
+             Color that has not been declared in the vertex shader.
+11:41:37.533 Errors linking blit shader:   L0007 (同上)
+11:41:37.554 Unknown exception while processing file: .../PartDesignExample.FCStd
+```
+
+**这两个着色器属于 `libQt6OpenGL_arm64-v8a.so`**（在全部 165 个 jniLibs 里逐个 `strings` 搜出来的，
+`Errors linking blit shader: %s` / `Errors linking simple shader: %s`），
+即 **Qt 自己的 OpenGL 着色器**（`QOpenGLTextureBlitter` / Qt OpenGL 绘制引擎），**不是** Coin 的、也不是 gl4es 的。
+
+### 完整因果链
+
+1. 进程同时链接了 **gl4es 的 `libGL.so`**（Coin 需要桌面 GL）与 **NDK 的 `libGLESv2.so`**（Qt 需要 GLES）
+2. 实测符号重叠：gl4es 导出 **1233** 个、GLES2 导出 **202** 个，**同名重叠 142 个**
+   （`glCreateProgram`、`glBindAttribLocation`、`glBindTexture`… 全是 Qt 渲染要用的）
+3. **gl4es 在符号解析中胜出** ⇒ Qt 的 GL 调用被 gl4es 接管
+4. gl4es 对外宣称 **"Targeting OpenGL 2.1"**（桌面 GL），Qt 据此写出桌面 GLSL（`attribute`/`varying`）
+5. gl4es 的 GLSL→GLES 翻译**丢掉了顶点着色器里的 `varying Color` 声明** ⇒ 链接失败
+6. Qt 无法合成 `QOpenGLWidget` ⇒ **3D 视口一片灰**（只剩父控件背景色）
+7. 创建 3D 视图时抛出异常 ⇒ 文档打开失败、Model 树为空
+
+> 这也解释了为什么此前反复出现 `makeCurrent(): no EGLSurface` / `QRhiGles2: Failed to make context current`
+> —— Qt 的 GL 上下文建立被 gl4es 干扰。
+
+### 候选修法（按代价排序，尚未验证）
+
+| # | 方案 | 代价 | 说明 |
+|---|---|---|---|
+| 1 | **`LIBGL_ES=2`** | 一行 env + 重编 APK | 让 gl4es 宣称 GLES2 而非桌面 GL 2.1；Qt 在 Android 本就按 GLES 写着色器，翻译可能直接通过。`src/gl/init.c:176` 读取该变量 |
+| 2 | `LIBGL_DBGSHADERCONV=1` | 一行 env | 打印 gl4es 转换后的着色器，用于确证第 5 步 |
+| 3 | 让 Qt 走原生 GLES2 | 高 | 符号冲突下难分离；需 dlopen 命名空间隔离（`android_dlopen_ext` + 独立 namespace） |
+| 4 | 修 gl4es 的 varying 翻译 | 高 | 改 `src/gl/shaderconv.c` |
+| 5 | 3D 视图改用原生 `SurfaceView` | 很高 | 正确的 Android 移植做法，但需重写 Quarter 集成 |
+
+**下一步优先试方案 1**（成本最低、直击第 4-5 步）。
+
+### 环境备注
+- 设备端口会漂移：`192.168.0.108:44939` → `:34963`（`adb mdns services` 里 `_adb-tls-connect._tcp` 标记为 `device` 的那个才是活的）
+- `adb install` 偶发被 vivo 安全弹窗拒绝（`INSTALL_FAILED_ABORTED: User rejected permissions`）；
+  关闭 `verifier_verify_adb_installs` 无效，需在手机上手动点「允许」；有时重试即可成功（04:04 那次成功过）
+- 存储已清理：可用 25 GiB
+
+### 第 36 轮补充：着色器归属与可用的覆盖开关
+
+**`varying Color` 的归属**：错误信息里的 varying 名是 `Color`，**没有** `_gl4es_` 前缀。
+gl4es 内建 varying 一律带前缀（`_gl4es_FrontColor` / `_gl4es_TexCoord_N`，见 `src/gl/shaderconv.c:240-258`）。
+⇒ 这个 `Color` 是 **Qt OpenGL 绘制引擎自己的 varying**。
+⇒ **Qt 正在用 OpenGL 绘制引擎渲染控件**，而 gl4es 的 GLSL 转换把 Qt 的着色器改坏了。
+
+**gl4es 可用的相关开关**（`src/gl/init.c` / `getter.c`）：
+| 变量 | 作用 | 备注 |
+|---|---|---|
+| `LIBGL_VERSION` | **覆盖 `glGetString(GL_VERSION)` 的返回值**（`init.c:381,386`） | 格式 `"%s gl4es wrapper %d.%d.%d"`；默认是 `"2.1 gl4es wrapper 1.1.7"` |
+| `LIBGL_ES` | 选内部 GLES 后端（1=GLES1.1，2=GLES2.0） | **默认已是 2**，且只影响内部，不改变对外宣称版本（`init.c:210`） |
+| `LIBGL_DBGSHADERCONV` | 打印 gl4es 转换后的着色器 | **确证第 5 步的最佳工具** |
+| `LIBGL_DEEPBIND` | gl4es 加载 GLES 时用 RTLD_DEEPBIND | 默认 1（非 GL4ES_COMPILE_FOR_USE_IN_SHARED_LIB 时） |
+
+**符号重叠实测**（`llvm-nm -D --defined-only` 后 `comm -12`）：
+gl4es 导出 **1233**、NDK GLES2 导出 **202**、**同名重叠 142**。
+
+**下一步实验优先级**（每个都需"改 MainActivity env → 重编 APK → 安装 → 截图"一轮）：
+1. `LIBGL_DBGSHADERCONV=1` —— 先拿确证数据，看 gl4es 到底把 Qt 的 VS/FS 改成了什么
+2. `LIBGL_VERSION="2.1"` 变体 / 试让 Qt 走非 OpenGL 绘制引擎（`QT_OPENGL=software` 等）
+3. 若确证是 gl4es 转换 bug ⇒ 改 `src/gl/shaderconv.c`（保留 VS 中所有 `varying` 声明，不做无用声明剔除）
+4. 结构性方案：给 gl4es 改 SONAME + 由 Coin 用 `android_dlopen_ext` 独立 namespace 加载，
+   使 Qt 的 GL 调用走原生 GLES2、Coin 的走 gl4es（彻底消除 142 符号冲突）
+
+### 第 36 轮定论：`Color` varying 的确切来源
+
+**在 gl4es 源码里找到了它**：
+
+```c
+// src/gl/fpe_shader.c:217   —— FPE = Fixed Pipeline Emulation
+ShadAppend("varying vec4 Color;\n");  // might be unused...
+// 同文件 :67
+sprintf(buff, "%s", twosided?"((gl_FrontFacing)?Color:BackColor)":"Color");
+```
+
+`Color` **是 gl4es 自己的 FPE（固定管线仿真）着色器 varying 名**，且**不带 `_gl4es_` 前缀**
+（`_gl4es_` 前缀只用于 `shaderconv.c` 那条「app 自带着色器转换」路径，见 `shaderconv.c:23,40,47,64`）。
+
+**完整机制**（与符号冲突是同一个根因的两面）：
+
+1. FreeCAD/Coin 大量使用**固定管线**（立即模式、`glLightf`、`glBegin/glEnd`）
+   ⇒ gl4es 进入 **FPE 着色器模式**，生成 `varying vec4 Color;`
+2. 同一个进程里，**Qt 也通过 gl4es 编译它自己的着色器**
+   （符号冲突实测：gl4es 导出 1233 个、NDK GLES2 导出 202 个、**同名重叠 142 个**，gl4es 胜出）
+3. gl4es 的 FPE 全局状态污染了 Qt 的程序 ⇒ GLES 驱动链接时报
+   `Fragment shader uses a varying Color that has not been declared in the vertex shader`
+4. Qt 的 **"blit shader"** 就是 `QOpenGLTextureBlitter`（用于合成 `QOpenGLWidget`），
+   **"simple shader"** 是 Qt OpenGL 绘制引擎的
+   ⇒ **Qt 既画不了控件、也合成不了 3D 视图** ⇒ 视口只剩父控件背景色
+5. 创建 3D 视图时抛异常 ⇒ 文档打开失败
+
+**结论：这不是「某个函数写错」，而是架构性的 —— gl4es 与原生 GLES2 在同一符号命名空间内共存，
+gl4es 的固定管线仿真状态泄漏到了 Qt 的着色器里。**
+
+**修复方向（按正确性排序）**：
+1. **符号隔离**（最正确）：给 gl4es 改独立 SONAME，不把它作为 `libCoin.so` 的 `DT_NEEDED`，
+   改由 Coin 用 `android_dlopen_ext` + **独立 linker namespace** 加载；
+   `cc_dl_opengl_handle()` 里 `func == glGetString` 的恒等比较需一并放宽；
+   `eglglue_getprocaddress()` 改为 `dlsym(gl4es_handle, name)`。
+   ⇒ Qt 走原生 GLES2、Coin 走 gl4es，142 个符号冲突彻底消失。
+2. **让 Coin 不依赖 gl4es**：Coin 本身有 `HAVE_GLES` 支持，若能以纯 GLES2 路径渲染，
+   则整条 gl4es 依赖可去掉（最彻底，但需验证 Coin 的 GLES 路径能否覆盖 FreeCAD 的固定管线用法）。
+3. **改 gl4es**：让 FPE 状态不泄漏到 app 自带着色器（需深入 `fpe_shader.c` / `shaderconv.c` 的状态机）。
+4. 先诊断：`LIBGL_DBGSHADERCONV=1` 打印转换后着色器，确认第 3 步的注入点。
+
+> 至此 3D 视口空白的**根因已完全锁定并有源码级证据**，剩下的工作是在上述 4 条修复路线中选一条实施。
+
+### 第 36 轮补充二：为什么不能「干脆去掉 gl4es」
+
+在 Coin 全树 grep `HAVE_GLES|COIN_GLES|USE_GLES` ⇒ **零匹配**。
+Coin **完全没有 GLES 后端**，也没有自带的固定管线仿真着色器
+（`src/glue/` 下只有 gl_agl/gl_cgl/gl_egl/gl_glx/gl_wgl 五套平台胶水，没有 GLES 渲染路径）。
+
+> 注意：我们的补丁 `01-cmake-android-gles.patch` 里写的 `set(HAVE_GLES 1)`
+> 是**空设置** —— 没有任何代码消费这个变量。当时是「让 configure 过」的权宜之计。
+
+**结论**：Coin 的渲染器（固定管线 / 立即模式）**必须**由 gl4es 翻译，
+**gl4es 无法移除**。因此「让 Qt 和 Coin 各用各的 GL 实现」只能靠
+**Android 链接器命名空间隔离**（`android_create_namespace` + `android_dlopen_ext`），
+不能用「去掉 gl4es」或「换 GLES」这类简单办法。
+
+### 修复实施清单（下一轮的工作范围）
+
+1. **取消链接**：把 gl4es 从 `libCoin.so` 的链接行移除（回退第 33 轮那处改动），
+   使 `libGL.so` 不再是 `libCoin.so` 的 `DT_NEEDED` ⇒ 它不再进入全局符号表
+2. **独立 namespace 加载**：新增一小段代码用
+   `android_create_namespace(...)` + `android_dlopen_ext(...)` 把 gl4es 载入**私有 namespace**，
+   导出 handle（可放在 `android-app/bridge/` 里，由 shim 提供）
+3. **改 `cc_dl_opengl_handle()`**（`src/glue/dl.cpp:1048`）：
+   - 用上面的 handle 而不是 `cc_dl_open("libGL.so")`
+   - **放宽 `func == glGetString` 的恒等比较** —— 未链接 gl4es 后，
+     已链接的 `glGetString` 会是原生 GLES2 的，该比较必然失败
+4. **改 `eglglue_getprocaddress()`**：从 `dlsym(RTLD_DEFAULT, name)` 改为 `dlsym(gl4es_handle, name)`
+5. **处理 Coin 的直接 GL 调用**：`cc_glglue_instance()` 里 `glGetError()` / `glGetString()` /
+   `glGetIntegerv()` / `glGetFloatv()` 是**直接调用**（非经 glue 的函数指针），
+   隔离后会落到原生 GLES2。gl4es 自己有错误状态（`errorShim`），需评估是否需要一并改走 handle。
+
+**风险点**：第 5 步是唯一有语义风险的地方（两套 GL 状态并存）。
+建议先在设备上用 `LIBGL_DBGSHADERCONV=1` 确认注入点，再动这一步。

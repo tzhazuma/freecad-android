@@ -1,6 +1,8 @@
---- CMakeLists.txt.orig	2026-10-13 05:21:16
-+++ CMakeLists.txt	2026-10-13 05:21:16
-@@ -261,6 +261,21 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index bfd4cfb..88803a9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -261,6 +261,36 @@ else()
      list(APPEND COIN_TARGET_INCLUDE_DIRECTORIES ${X11_INCLUDE_DIR})
      list(APPEND COIN_TARGET_LINK_LIBRARIES ${X11_LIBRARIES})
    endif()
@@ -14,6 +16,21 @@
 +    set(HAVE_GLES 1)
 +    set(OPENGL_SYSTEM_LIBRARY_NAME "libGLESv2.so")
 +    set(OPENGL_INCLUDE_DIR "${CMAKE_ANDROID_NDK}/toolchains/llvm/prebuilt/${ANDROID_HOST_TAG}/sysroot/usr/include")
++    # gl4es (prefix/arm64-v8a/lib/libGL.so) implements the desktop-GL 1.5 entry
++    # points that Coin's fixed-function renderer calls (glLightf, immediate mode,
++    # ...) and forwards them to GLES at runtime. Without it the link fails with
++    # "undefined symbol: glLightf". GLU comes from GLU-master in the same prefix.
++    # Use the full paths from find_package(OpenGL): a bare -lGL/-lGLU is not
++    # findable because the prefix lib dir is not on the link search path.
++    if(OPENGL_gl_LIBRARY)
++      list(APPEND COIN_TARGET_LINK_LIBRARIES_GL ${OPENGL_gl_LIBRARY})
++    else()
++      list(APPEND COIN_TARGET_LINK_LIBRARIES_GL GL)
++    endif()
++    if(OPENGL_glu_LIBRARY)
++      list(APPEND COIN_TARGET_LINK_LIBRARIES_GL ${OPENGL_glu_LIBRARY})
++      set(HAVE_GLU 1)
++    endif()
 +    if(COIN_BUILD_EGL)
 +      set(HAVE_EGL 1)
 +      list(APPEND COIN_TARGET_LINK_LIBRARIES_GL GLESv2 EGL)
@@ -22,7 +39,7 @@
    find_package(OpenGL REQUIRED)
    if(OPENGL_FOUND)
      set(HAVE_OPENGL 1)
-@@ -296,6 +311,7 @@
+@@ -296,6 +326,7 @@ else()
        endif()
      endif()
    endif()

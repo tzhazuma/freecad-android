@@ -32,7 +32,7 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
 
     /** Must match the PYTHONHOME the native bridge sets. */
     private static final String PY_PREFIX_NAME = "python-prefix";
-    private static final String PY_VERSION_DIR = "python3.13";
+    private static final String PY_VERSION_DIR = "python3.11";
 
     /**
      * Bump whenever anything under assets/pylib changes.
@@ -43,8 +43,12 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
      * the marker still matched, and the package was never written to disk, leaving
      * FreeCAD reporting "No module named 'freecad'" from a payload that looked fine
      * in the APK.
+     *
+     * The same trap hit again when freecad/PySide/lazy_loader were added while v3 was
+     * still current: PySide6 and shiboken6 (extracted earlier) were present on disk,
+     * the three new packages were not, and the app crashed in showMainWindow().
      */
-    private static final String PY_ASSETS_VERSION = "2";
+    private static final String PY_ASSETS_VERSION = "4";
 
     /** Best-effort setenv; android.system.Os.setenv is available from API 21. */
     private static void setEnv(String name, String value) {

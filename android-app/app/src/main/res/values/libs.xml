@@ -13,30 +13,13 @@
         <item>arm64-v8a;plugins_imageformats_qico_arm64-v8a</item>
         <item>arm64-v8a;plugins_imageformats_qjpeg_arm64-v8a</item>
         <item>arm64-v8a;plugins_imageformats_qsvg_arm64-v8a</item>
+        <item>arm64-v8a;plugins_styles_qandroidstyle_arm64-v8a</item>
     </array>
     <array name="bundled_libs">
+        <item>arm64-v8a;python3.11</item>
         <item>arm64-v8a;c++_shared</item>
-        <item>arm64-v8a;AssemblyApp</item>
-        <item>arm64-v8a;DraftUtils</item>
-        <item>arm64-v8a;Import</item>
-        <item>arm64-v8a;Inspection</item>
-        <item>arm64-v8a;Materials</item>
-        <item>arm64-v8a;Measure</item>
-        <item>arm64-v8a;Mesh</item>
-        <item>arm64-v8a;Part</item>
-        <item>arm64-v8a;Points</item>
-        <item>arm64-v8a;ReverseEngineering</item>
-        <item>arm64-v8a;Robot</item>
-        <item>arm64-v8a;Sketcher</item>
-        <item>arm64-v8a;Spreadsheet</item>
-        <item>arm64-v8a;Start</item>
-        <item>arm64-v8a;Surface</item>
-        <item>arm64-v8a;TechDraw</item>
-        <item>arm64-v8a;Web</item>
-        <item>arm64-v8a;_PartDesign</item>
         <item>arm64-v8a;FreeCADApp</item>
         <item>arm64-v8a;FreeCADBase</item>
-        <item>arm64-v8a;FreeCADCmd_arm64-v8a</item>
         <item>arm64-v8a;OndselSolver</item>
         <item>arm64-v8a;TKBO</item>
         <item>arm64-v8a;TKBRep</item>
@@ -88,36 +71,17 @@
         <item>arm64-v8a;TKXmlTObj</item>
         <item>arm64-v8a;TKXmlXCAF</item>
         <item>arm64-v8a;TKernel</item>
-        <item>arm64-v8a;python3.13</item>
-        <item>arm64-v8a;AssemblyGui</item>
         <item>arm64-v8a;Coin</item>
         <item>arm64-v8a;FreeCADGui</item>
         <item>arm64-v8a;FreeCAD_arm64-v8a</item>
         <item>arm64-v8a;GL</item>
         <item>arm64-v8a;GLU</item>
-        <item>arm64-v8a;ImportGui</item>
-        <item>arm64-v8a;InspectionGui</item>
-        <item>arm64-v8a;MatGui</item>
-        <item>arm64-v8a;MeasureGui</item>
-        <item>arm64-v8a;MeshGui</item>
-        <item>arm64-v8a;PartDesignGui</item>
-        <item>arm64-v8a;PartGui</item>
-        <item>arm64-v8a;PointsGui</item>
         <item>arm64-v8a;Qt6OpenGLWidgets_arm64-v8a</item>
         <item>arm64-v8a;Qt6OpenGL_arm64-v8a</item>
         <item>arm64-v8a;Qt6PrintSupport_arm64-v8a</item>
         <item>arm64-v8a;Qt6SvgWidgets_arm64-v8a</item>
         <item>arm64-v8a;Qt6Svg_arm64-v8a</item>
         <item>arm64-v8a;Qt6UiTools_arm64-v8a</item>
-        <item>arm64-v8a;QtUnitGui</item>
-        <item>arm64-v8a;ReverseEngineeringGui</item>
-        <item>arm64-v8a;RobotGui</item>
-        <item>arm64-v8a;SketcherGui</item>
-        <item>arm64-v8a;SpreadsheetGui</item>
-        <item>arm64-v8a;StartGui</item>
-        <item>arm64-v8a;SurfaceGui</item>
-        <item>arm64-v8a;TechDrawGui</item>
-        <item>arm64-v8a;_coin</item>
     </array>
     <array name="load_local_libs">
     </array>

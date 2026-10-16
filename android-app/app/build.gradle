@@ -6,7 +6,7 @@ plugins { id 'com.android.application' }
 // (QtNative and friends). Qt's own androiddeployqt compiles these sources into the
 // app, so we do the same here.
 def qtAndroidRoot = System.getenv("QT_ANDROID_DIR") ?:
-        "${System.getProperty("user.home")}/freecad-android/Qt/6.6.3/android_arm64_v8a"
+        "${System.getProperty("user.home")}/freecad-android/Qt/6.8.3/android_arm64_v8a"
 
 android {
     namespace = "org.freecad.android"
