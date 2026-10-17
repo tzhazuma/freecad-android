@@ -101,6 +101,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DHAVE_3DS_IMPORT_CAPABILITIES=OFF \
   -DHAVE_SOUND=OFF \
   -DCOIN_BUILD_GLX=OFF \
+  -DGL4ES_DESKTOP_SHIM="$ROOT/shim/gl4es-desktop-shim/libgl4es_desktop_shim.a" \
   -DCOIN_BUILD_EGL=ON \
   -DCOIN_BUILD_SINGLE_LIB=OFF \
   -DCOIN_THREADSAFE=OFF \

@@ -4307,3 +4307,164 @@ Coin **完全没有 GLES 后端**，也没有自带的固定管线仿真着色�
 
 **风险点**：第 5 步是唯一有语义风险的地方（两套 GL 状态并存）。
 建议先在设备上用 `LIBGL_DBGSHADERCONV=1` 确认注入点，再动这一步。
+
+---
+
+## 第 37 轮：gl4es 符号隔离修复 —— 设计与已落地的部分
+
+### 已确认的关键事实（读源码 + 实测）
+
+1. **`cc_glglue_getprocaddress()` 本来就有第四条回落路径**（`src/glue/gl.cpp:527`）：
+   ```cpp
+   ptr = cc_dl_sym(coin_glglue_dl_handle(glue), symname);
+   ```
+   即 Coin **支持从 glue 里的 dl handle 解析 GL 函数** —— 这是隔离方案的支点。
+2. **`cc_dl_open()` 用的是 `dlopen(filename, RTLD_LAZY)`**（`src/glue/dl.cpp:603`），
+   即默认 `RTLD_LOCAL` ⇒ 一旦改为「只 dlopen 不链接」，**gl4es 的符号不会进入全局命名空间**。
+3. **`cc_dl_handle_with_gl_symbols()` 的候选顺序原来是**
+   `{cc_dl_process_handle, cc_dl_coin_handle, cc_dl_opengl_handle}`，
+   而 `cc_dl_process_handle()` 是 `dlopen(NULL)` —— 它会拿到**全局**的 `glGetString`
+   （在 Android 上就是 GLES2 的），于是探测通过、直接返回**进程 handle**，
+   `cc_dl_opengl_handle` 永远不会被用到。
+4. **Android 的符号查找把「应用自带库」排在「系统库」之前** ⇒
+   gl4es（应用库）必然压过 `libGLESv2.so`（系统库），与加载顺序无关。
+   这解释了为什么改 `OPENGL_SYSTEM_LIBRARY_NAME` 无效。
+
+### 本轮已落地（已构建验证，未上机）
+
+| 文件 | 改动 | 验证 |
+|---|---|---|
+| `src/glue/dl.cpp` | `cc_dl_handle_with_gl_symbols()` 候选顺序改为 **`cc_dl_opengl_handle` 优先** | ✅ 已构建 |
+| `src/glue/dl.cpp` | `cc_dl_opengl_handle()` **放宽 `func == glGetString` 恒等比较**，只检查符号存在 | ✅ 已构建 |
+| `src/glue/gl_egl.cpp` | **撤销**第 35 轮加的 `dlsym(RTLD_DEFAULT, …)` 回落，还原为纯 `eglGetProcAddress()` | ✅ 已构建 |
+
+`libCoin.so` 构建成功（46.5 MB），`DT_NEEDED` 仍为 `libEGL.so libGL.so libGLESv2.so libGLU.so`
+（**尚未取消 gl4es 链接**，见下面的阻塞点）。
+
+> `gl_egl.cpp` 为什么要还原：新的安排下 `RTLD_DEFAULT` 会返回 **GLES2** 的实现
+> （因为 gl4es 将不再被链接），对 142 个同名符号是错的；必须让它返回 NULL，
+> 才能落到 `cc_dl_sym(gl4es_handle, …)` 那条正确路径。
+
+### 阻塞点：Coin 有 89 个「直接调用且 GLES2 没有」的桌面 GL 函数
+
+用 `llvm-nm` 取 `libGLESv2.so` 的导出集，与 Coin 源码里直接出现的 `gl*(` 调用做差集：
+
+```
+Coin 直接调用的 gl* 名称: 127 个
+其中 GLES2 没有的:        89 个
+```
+
+样例：`glLightf` / `glLightfv`（`src/nodes/SoSpotLight.cpp:174`）、`glBegin` / `glEnd`、
+`glMatrixMode` / `glLoadIdentity` / `glTranslatef`、`glTexEnvfv`、`glVertex3f`、
+`glColor3fv`、`glNormal3f`、`glPushMatrix`、`glFrustum`、`glPolygonMode` …
+
+**这些是直接调用（非经 glue 函数指针）**，所以取消链接 gl4es 会直接产生链接错误
+（第 33 轮遇到的 `undefined symbol: glLightf` 就是它）。
+
+### 完整的正确方案（下一步实施）
+
+**转发 shim**：新增一个小库，**只定义那 89 个「GLES2 没有」的符号**，
+每个函数从 gl4es 的 dl handle 取指针后转发。因为它只导出 GLES2 **没有**的名字，
+**不会与 `libGLESv2.so` 产生任何符号冲突**。这样：
+
+| 调用者 | 走哪条路 | 结果 |
+|---|---|---|
+| Qt 的 142 个同名 GL 调用 | 全局查找 → **GLES2**（应用库里已无 gl4es） | ✅ 原生，着色器正常 |
+| Coin 经 glue 解析的 142 个同名 | `cc_dl_sym(gl4es_handle, …)` | ✅ gl4es 实现 |
+| Coin 直接调用的 89 个桌面独有 | 链接期的 **shim** → 转发到 gl4es | ✅ gl4es 实现 |
+
+shim 的 89 个原型可从 gl4es 的 `include/GL/gl.h` 自动生成（脚本化，避免手写出错）。
+
+### 设备访问阻塞
+
+Mac 现位于 `10.20.166.127/21`，而用户给的设备地址是 `192.168.0.108` —— **不同网段，路由不可达**
+（5 个端口的 TCP 探测全部失败，mDNS 也发现不到设备）。需要两端在同一网段才能继续上机验证。
+
+---
+
+## 第 38 轮：gl4es 符号隔离修复**已构建成功并二进制验证通过**
+
+### 修复内容（三处源码 + 一个自动生成的 shim）
+
+| 文件 | 改动 |
+|---|---|
+| `src/3rdParty/coin/CMakeLists.txt` | Android 分支：**不再链接 gl4es**，改链 `GL4ES_DESKTOP_SHIM`；保留 GLU（自足，不拉回 gl4es） |
+| `src/glue/dl.cpp` | `cc_dl_handle_with_gl_symbols()` 候选顺序 → **`cc_dl_opengl_handle` 优先**；`cc_dl_opengl_handle()` **放宽 `func == glGetString` 恒等比较** |
+| `src/glue/gl_egl.cpp` | **撤销** `dlsym(RTLD_DEFAULT,…)` 回落，还原纯 `eglGetProcAddress()` |
+| `scripts/build-gl4es-desktop-shim.sh` | 新增：自动生成转发 shim |
+| `shim/gl4es-desktop-shim/` | 生成物：88→77 个 aarch64 尾跳转桩 |
+
+### shim 的设计要点（值得记下来）
+
+- **用汇编尾跳转桩而不是 C 转发函数**：`br x16` 天然保留 x0-x7 与栈参数，
+  **完全不需要函数原型**，所以可以纯脚本生成，也不会因为签名写错而出 bug。
+- **符号集从目标文件反推，不靠 grep 源码**：第一次 grep `src/nodes|actions|elements|misc|rendering`
+  只找到 88 个，链接时报 `undefined symbol: glTexCoord4fv / glBitmap / glRasterPos3f …`。
+  改成 `find <coin-build> -name '*.o' | xargs llvm-nm -u` 取**目标文件里真正未定义的** `gl*`，
+  再减去 `libGLESv2.so` 的导出集 —— 这才是权威集合。
+- **`gl4es_slots` 必须 `.hidden`**：桩用 `adrp`/`add` 寻址该表，
+  默认可抢占（preemptible）的符号会让 `ld.lld` 拒绝这种重定位：
+  `relocation R_AARCH64_ADR_PREL_PG_HI21 cannot be used against symbol 'gl4es_slots'`。
+- **脚本里必须写 `/usr/bin/python3`**：本机 `python3` 是
+  `/Users/azuma/toolchains/pyocd-venv/bin/python3`，**静默不执行**（本会话已踩过两次）。
+  第一次生成器没跑，`.S` 一直是旧的、没有 `.hidden`，表现为「改了脚本但输出没变」。
+
+### ★ 二进制级验证（这是修复成立的硬证据）
+
+```
+libCoin.so 的 DT_NEEDED: libEGL.so  libGLESv2.so  libGLU.so
+                         ↑ libGL.so（gl4es）已彻底消失
+
+桌面独有符号已定义: glLightf glBegin glMatrixMode glTexEnvfv
+                    glVertex3f glPushMatrix glBitmap glRasterPos3f  ✅
+shim 与 GLESv2 的重名符号数: 0  ← 正是设计目标
+```
+
+⇒ gl4es 的符号**不再进入全局命名空间**，Qt 将拿到真正的 GLES2，
+其 `blit shader` / `simple shader` 应能正常链接；Coin 仍经
+`cc_dl_sym(gl4es_handle, …)` 与 shim 用到 gl4es。
+
+### 上机验证被设备权限阻塞
+
+`libCoin.so` 已打入 APK（432.3 MB），但 **vivo ROM 静默丢弃安装**：
+推送成功（453,300,239 字节校验一致），`pm install` 与 `adb install` 均**无任何输出**，
+logcat 里也没有 PackageInstaller 记录，`lastUpdateTime` 始终不变。
+`install_non_market_apps` / `verifier_verify_adb_installs` / `adb_install_need_confirm` 全为 `null`。
+
+> 同类问题 dsh 子智能体也遇到并记录：**需要在开发者选项里放开「USB 安装」许可**，
+> 放开后装机一次成功（历史上 04:04 FreeCAD、04:10 Blender 两次成功都是在这种状态下）。
+
+**下一步**：用户在开发者选项允许 USB 安装后，重跑安装 → 启动 → 看
+`Errors linking simple shader` / `blit shader` 是否消失、3D 视口是否出现 NaviCube。
+
+---
+
+## 第 39 轮：安装被锁屏阻塞 —— 需要手动解锁
+
+APK（432.3 MB，含 Coin 隔离修复）已推送成功并校验一致，但**安装始终无法完成**。逐层排查结论：
+
+| 现象 | 排查结果 |
+|---|---|
+| `pm install` / `adb install` 无任何输出 | 不是 vivo 拦截 |
+| `/sdcard` 路径报 `Error: Can't open file` | 是 SELinux：system_server 读不了 fuse（`scontext=system_server` vs `u:object_r:fuse:s0`），必须用 `/data/local/tmp/` |
+| PackageInstaller UI 能弹出 | ✅ `com.android.packageinstaller/.PackageInterceptActivity` |
+| 弹窗内容 | vivo 二级确认：「Shell」请求安装外部来源应用「FreeCAD」→ 本次允许 / 以后都允许 / 取消；随后是「安全守护」未备案提示页 |
+| **最终根因** | **设备处于锁屏**：`mDreamingLockscreen=true`，锁屏提示「**双指上滑即可解锁设备**」 |
+
+**为什么 adb 解不开**：vivo 要求**双指上滑**手势，而 `adb shell input swipe` 只发单点触控事件，
+无法产生双指手势。`input keyevent 82/3/26` 与多种单指滑动均无效。
+
+⇒ **必须人工解锁手机**，之后重跑：
+```
+adb connect 192.168.0.108:5555
+adb shell am start -a android.intent.action.VIEW \
+  -d file:///sdcard/Download/freecad-new.apk \
+  -t application/vnd.android.package-archive
+# 手机上点「以后都允许」→「继续安装」
+```
+（`192.168.0.108:5555` 是经典 adbd TCP 端口，实测在无线调试端口失效时仍然可用，是更稳的连接方式。）
+
+### 网络备忘（端口漂移很频繁）
+本会话设备地址依次出现过：`10.20.103.121:36923` → `192.168.0.108:44939` → `:34963` → `10.20.164.160:33321`
+→ `192.168.0.108:40003` → `172.20.10.4:35623` → `192.168.0.108:5555`。
+**当 mDNS 与无线调试端口都失效时，先试 `<设备IP>:5555`** —— 实测两次救场。
