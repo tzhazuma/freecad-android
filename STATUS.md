@@ -4766,3 +4766,50 @@ file: ...` 本来就已经记在日志里；为了多打印一点 Python traceba
 > 教训：在 FreeCAD 这种「Qt 事件循环 + 嵌入 CPython」的混合架构里，
 > 不能假设任何回调都在 Python 线程上。诊断代码宁可少打信息，也不能碰
 > 需要线程状态的 CPython API。
+
+---
+
+## 第 46 轮：🎉🎉 FreeCAD 完整 GUI 稳定运行 —— 全指标通过
+
+### 最终验证结果（真机 vivo PA2573 / Android 16 / arm64-v8a）
+
+```
+★ pidof:            18767          进程稳定驻留
+★ libsigchain:      0              无原生崩溃
+★ spp 启动步骤:      34             全部 34 个 StartupPostProcess 步骤跑完
+★ Errors linking:   0              Qt 的 simple shader / blit shader 错误归零
+★ blake2 错误:       0              _blake2 重编后 hashlib 正常
+★ pc 00000000:      0              无 NULL 跳转
+```
+
+### 截图证据：`screenshots/qt683-final-verified.png`
+
+完整 GUI 全部正确渲染：
+- 顶部工具栏（完整图标集）+ 工作台选择器显示 **Mesh**
+- 三行工具栏全部描出
+- **Model 树**（左侧，View / Data 标签页）
+- **Tasks 面板**（右侧）显示 **Mesh Info**：
+  Mesh Info Box / Number of points / Number of facets / Minimum bound / Maximum bound
+- **状态栏**：「Ready」（左）+「CAD | Dimension」（右）
+- **3D 视口**正常合成（空场景灰色背景）
+
+### 剩余现象（仅为日志噪声，不影响功能）
+
+```
+makeCurrent(): no EGLSurface, likely Surface destroyed by Android.
+QRhiGles2: Failed to make context current. Expect bad things to happen.
+Failed to create QRhi for QBackingStoreRhiSupport
+```
+Qt 的后备存储 RHI 在 Activity 失去 surface 后反复重试。功能上无影响
+（界面与 3D 视口都正常渲染）。
+
+### 这一轮之前修好的 8 个问题汇总
+
+见第 36–45 轮，全部根因都已定位到源码级并有真机验证：
+PyCXX getAttr 空指针、eglGetProcAddress 核心函数返回 NULL、
+shim 构造函数未被链接（`--whole-archive`）、`PROC()` 字符串查找漏符号、
+`glActiveTexture` 被版本门控跳过并被主动置空、
+**gl4es 与 Qt 同名 SONAME 冲突（最终用 SONAME 分离解决）**、
+`_blake2` 链了系统 libb2、`PyErr_Occurred` 在非 Python 线程崩溃。
+
+**FreeCAD 移植到 Android arm64-v8a 至此基本完成。**
