@@ -4565,3 +4565,68 @@ Failed to create QRhi for QBackingStoreRhiSupport
 ```
 这是 Qt 的后备存储 RHI 在 Activity 失去 surface（屏幕休眠 / 切后台）后的重试噪声。
 3D 视口目前是空场景的灰色，需要**实际打开一个文档**才能验证几何渲染。
+
+---
+
+## 第 42 轮：3D 崩溃已修复，但 gl4es 仍在污染 Qt 的着色器
+
+### 已完成且真机验证
+
+```
+[spp] showMainWindow OK → activateWorkbench OK → checkParameters OK → checkVersionMigration OK
+pc 00000000 次数 = 0          （崩溃彻底消失）
+Coin: cc_dl_open("libGL.so") -> handle 0xb400006f9c1216b0   （gl4es 真的加载了）
+Coin: SoGLPolygonOffsetElement::updategl() 能报出 GL 能力查询结果（渲染在工作）
+完整 GUI 截图: screenshots/qt683-3d-verified.png
+```
+
+### 剩余问题 1：Qt 的着色器仍被 gl4es 改写
+
+```
+Errors linking simple shader: L0007 Fragment shader uses a varying Color
+                              that has not been declared in the vertex shader.
+Errors linking blit shader:   同上
+```
+
+**判断**：这不是崩溃，但意味着 **gl4es 的 `glShaderSource` / `glLinkProgram`
+仍在 Qt 的调用路径上**。Qt 自己的 VS/FS 不可能出现 `varying Color` 不匹配 ——
+`Color` 这个名字来自 gl4es 的 fixed-pipeline-emulation（`gl4es/src/gl/fpe_shader.c:217`
+的 `ShadAppend("varying vec4 Color;\n")`，以及 `:67` 的 `?Color:BackColor`），
+且不带 `_gl4es_` 前缀，所以一定是 FPE 路径注入的。
+
+**为什么 RTLD_LOCAL 没能隔离**：`libCoin.so` 已不再链接 `libGL.so`，
+shim 用 `dlopen(altpath, RTLD_LAZY|RTLD_LOCAL)`，Coin 的 `cc_dl_open` 也是
+`dlopen(name, RTLD_LAZY)`（默认 LOCAL）。理论上符号不该进全局表。
+但仍被拦截，说明还有一条路径把它暴露了。待查方向：
+1. bionic 若发现该库已以 global 方式加载过，会沿用 —— 检查是否有第三方先加载了它
+2. `libGL.so` 是否带 `DF_1_GLOBAL` 之类的标志
+3. 更彻底的做法：**给 gl4es 换一个不叫 `libGL.so` 的文件名**（例如
+   `libgl4es_internal.so`），避免任何按 soname 的隐式加载，并显式只让 shim 用
+   RTLD_LOCAL 打开它
+
+### 剩余问题 2：文档打开抛异常
+
+已加诊断（`Application.cpp` 的 `catch(...)` 原来吞掉一切，因为 PyCXX 异常
+不继承 `Base::Exception` 也不继承 `std::exception`），拿到完整 traceback：
+
+```
+ValueError: unsupported hash type blake2b      ← 非致命
+ValueError: unsupported hash type blake2s
+During initialization the error "No module named 'defusedxml'"  (AddonManager)
+During initialization the error "UI file does not exist"         (Draft)
+During initialization the error "No module named '_socket'"      (Help)
+ModuleNotFoundError: No module named 'MeshFlatteningCommand'
+Unknown exception while processing file: .../PartDesignExample.FCStd
+```
+
+**已排除的假设**：
+- `_sha256` / `_sha512` / `_sha1` / `_md5` / `_blake2` / `_sha3` 扩展**都在设备上**，
+  且大小与本地 prefix 逐字节一致（`_sha256` = 62752 B 两边相同）
+- `libpython3.11.so` 的 SONAME **确实是 `libpython3.11.so.1.0`**，且该文件已装到
+  设备的 `lib/arm64/` 下（20 MB strip 后 5.4 MB）
+
+**新的判断**：`_blake2` 能 import（否则会报 `No module named '_blake2'`），
+但 `blake2b` **类型**不可用 ⇒ 扩展加载了、`PyInit__blake2` 也跑了，
+但模块里没有 `blake2b` 属性。可能是构建时的 `setup.py` 没启用
+`Py_BLAKE2B`/`Py_BLAKE2S`，或该扩展被编成了空壳。
+下一步：在设备上直接 `import _blake2; dir(_blake2)` 确认。
