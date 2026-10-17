@@ -4630,3 +4630,49 @@ Unknown exception while processing file: .../PartDesignExample.FCStd
 但模块里没有 `blake2b` 属性。可能是构建时的 `setup.py` 没启用
 `Py_BLAKE2B`/`Py_BLAKE2S`，或该扩展被编成了空壳。
 下一步：在设备上直接 `import _blake2; dir(_blake2)` 确认。
+
+---
+
+## 第 43 轮：🎉 gl4es 与 Qt 彻底隔离 —— Qt 着色器错误归零
+
+### 最终方案：用 SONAME 分离两个「libGL」
+
+三轮实验把问题逼到了根上：
+
+| 实验 | 结果 |
+|---|---|
+| gl4es 作为 `libGL.so` | GUI 渲染 ✓，但 **Qt 着色器错误**（`varying Color`）—— gl4es 的 142 个同名符号劫持了 Qt |
+| gl4es 改名 `libgl4es.so` + 删掉 `libGL.so` | **着色器错误 0** ✓，但 Qt 报「fatal error」—— `libFreeCADGui.so`、`libFreeCAD_arm64-v8a.so`、**全部 `*Gui.so` 工作台库的 `DT_NEEDED` 都是 `libGL.so`** |
+| 共享 shim 冒充 `libGL.so` | **SONAME 冲突**（shim 与 gl4es 都自称 `libGL.so`）→ bionic 按 SONAME 去重 → 两个库互相顶替 → 着色器错误回归 |
+
+**正确方案**：让两个库的 SONAME **不同名**，同时 `libGL.so` 这个名字由 shim 独占。
+
+1. 把 gl4es 复制成 `gl4es.so`，并**原地改写字串表**把它的 `DT_SONAME` 从
+   `libGL.so` 改成 `gl4es.so`（`gl4es.so` 8 字节 < `libGL.so` 9 字节，可以覆盖并补 NUL）
+2. 把 shim 编译成**共享库** `libGL.so`（SONAME `libGL.so`），它只导出
+   **195 个 GLES2 没有的桌面函数**，所以与 GLESv2 零冲突，Qt 完全看不到它
+3. `libFreeCADGui.so` / 全部 `*Gui.so` 的 `DT_NEEDED: libGL.so` → 由 shim 满足 ✓
+4. shim 的构造函数用 `dladdr` 取自身目录 + 绝对路径 `dlopen("gl4es.so", RTLD_LAZY|RTLD_LOCAL)`
+5. Coin 的 `OPENGL_SYSTEM_LIBRARY_NAME` 改为 `gl4es.so`
+
+> 踩到的坑：macOS APFS 默认**大小写不敏感**，所以 `libGL.so` 与 `libgl.so` 是同一个文件，
+> 不能靠大小写区分两个库 —— 这也是为什么最终选了 `gl4es.so` 这个名字。
+
+### 验证结果（真机）
+
+```
+★ pc 00000000: 0           崩溃彻底消失
+★ Errors linking: 0        Qt 的 simple shader / blit shader 错误归零
+★ spp 步骤: 34             全部 34 个 StartupPostProcess 步骤跑完
+★ shim: resolved 161/195 symbols
+       （缺的 34 个是 glColorTableEXT / glColorSubTableSGI / glBindTextureEXT
+         这类早已废弃的 EXT/SGI 扩展，gl4es 本来就没实现，无害）
+★ 未定义符号 / libsigchain: 0
+```
+
+### 剩余问题
+
+`Unknown exception while processing file: .../PartDesignExample.FCStd` 仍在，
+应用跑完启动流程后会退出。这是**文档打开**这条独立缺陷（见第 42 轮的分析：
+`_blake2` 能 import 但没有 `blake2b` 属性，以及 `defusedxml` / `_socket` /
+Draft UI 等已知缺口），与 3D 渲染无关 —— 3D 这条线已经通了。

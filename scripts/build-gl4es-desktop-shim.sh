@@ -182,15 +182,15 @@ static void gl4es_desktop_shim_init(void)
             size_t dirlen = (size_t)(slash - info.dli_fname) + 1;
             if (dirlen + sizeof("libGL.so") < sizeof(altpath)) {{
                 memcpy(altpath, info.dli_fname, dirlen);
-                strcpy(altpath + dirlen, "libGL.so");
+                strcpy(altpath + dirlen, "gl4es.so");
                 h = dlopen(altpath, RTLD_LAZY | RTLD_LOCAL);
                 shim_log("dlopen(%s) -> %p", altpath, h);
             }}
         }}
     }}
     if (!h) {{
-        h = dlopen("libGL.so", RTLD_LAZY | RTLD_LOCAL);
-        shim_log("fallback dlopen(libGL.so) -> %p", h);
+        h = dlopen("gl4es.so", RTLD_LAZY | RTLD_LOCAL);
+        shim_log("fallback dlopen(gl4es.so) -> %p", h);
     }}
     if (!h) return;
     {{
@@ -213,6 +213,23 @@ PY
 "$NDKBIN/clang" --target=aarch64-none-linux-android24 --sysroot="$SYSROOT" \
   -fPIC -O2 -c gl4es_desktop_shim.c -o shim_c.o
 "$NDKBIN/llvm-ar" rcs libgl4es_desktop_shim.a shim_asm.o shim_c.o
+
+# Also build a SHARED library called libGL.so.
+#
+# libFreeCADGui.so, libFreeCAD_arm64-v8a.so and every *Gui.so workbench library
+# carry DT_NEEDED libGL.so, because they reference desktop-GL entry points at link
+# time. Something has to satisfy that name or the whole GUI fails to load (Qt then
+# shows "Your application encountered a fatal error and cannot continue").
+#
+# It must NOT be gl4es itself: gl4es exports 142 symbols that libGLESv2.so also
+# exports, and Android resolves an app's own libraries first, so gl4es would hijack
+# Qt's GL calls again -- that is exactly the bug this whole exercise removed. The
+# shim exports only the desktop-only names, which libGLESv2.so does not have, so no
+# collision is possible.
+"$NDKBIN/clang" --target=aarch64-none-linux-android24 --sysroot="$SYSROOT" \
+  -shared -fuse-ld=lld -Wl,-soname,libGL.so \
+  shim_asm.o shim_c.o -o libGL.so
+echo "built $OUT/libGL.so (shared shim)"
 
 # 4. Fail loudly if any stub collides with GLES2 -- that would defeat the whole point.
 conflicts=$(comm -12 <("$NDKBIN/llvm-nm" --defined-only libgl4es_desktop_shim.a \

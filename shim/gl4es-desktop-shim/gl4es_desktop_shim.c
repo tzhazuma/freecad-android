@@ -246,15 +246,15 @@ static void gl4es_desktop_shim_init(void)
             size_t dirlen = (size_t)(slash - info.dli_fname) + 1;
             if (dirlen + sizeof("libGL.so") < sizeof(altpath)) {
                 memcpy(altpath, info.dli_fname, dirlen);
-                strcpy(altpath + dirlen, "libGL.so");
+                strcpy(altpath + dirlen, "gl4es.so");
                 h = dlopen(altpath, RTLD_LAZY | RTLD_LOCAL);
                 shim_log("dlopen(%s) -> %p", altpath, h);
             }
         }
     }
     if (!h) {
-        h = dlopen("libGL.so", RTLD_LAZY | RTLD_LOCAL);
-        shim_log("fallback dlopen(libGL.so) -> %p", h);
+        h = dlopen("gl4es.so", RTLD_LAZY | RTLD_LOCAL);
+        shim_log("fallback dlopen(gl4es.so) -> %p", h);
     }
     if (!h) return;
     {
