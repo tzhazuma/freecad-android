@@ -4741,3 +4741,28 @@ if (Py_IsInitialized() && PyGILState_GetThisThreadState() != nullptr
 
 > 教训：在非 Python 线程里不能直接碰 CPython 的 C API，先确认
 > `PyGILState_GetThisThreadState()` 非空。
+
+---
+
+## 第 45 轮：彻底移除 `catch(...)` 里的 CPython C API 调用
+
+上一轮加了 `Py_IsInitialized() && PyGILState_GetThisThreadState() != nullptr`
+守卫，但真机仍然崩在同一处：
+
+```
+#07 libpython3.11.so (PyErr_Occurred+8)
+#08 libFreeCADApp.so (App::Application::processFiles(...))
+#09 libFreeCADGui.so (Gui::MainWindow::delayedStartup()+316)
+```
+
+原因：`PyGILState_GetThisThreadState()` 内部也会走 `PyThreadState_GET()`，
+在没有任何 Python 线程状态的线程上同样不安全。
+
+**最终做法：这段诊断整个删掉。** `catch(...)` 只记一行文件名。
+理由：它只是诊断，真正的错误信息 `Unknown exception while processing
+file: ...` 本来就已经记在日志里；为了多打印一点 Python traceback 而引入
+一个 100% 复现的 SIGSEGV 完全不值得。
+
+> 教训：在 FreeCAD 这种「Qt 事件循环 + 嵌入 CPython」的混合架构里，
+> 不能假设任何回调都在 Python 线程上。诊断代码宁可少打信息，也不能碰
+> 需要线程状态的 CPython API。
