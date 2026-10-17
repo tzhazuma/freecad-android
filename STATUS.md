@@ -4676,3 +4676,68 @@ Unknown exception while processing file: .../PartDesignExample.FCStd
 应用跑完启动流程后会退出。这是**文档打开**这条独立缺陷（见第 42 轮的分析：
 `_blake2` 能 import 但没有 `blake2b` 属性，以及 `defusedxml` / `_socket` /
 Draft UI 等已知缺口），与 3D 渲染无关 —— 3D 这条线已经通了。
+
+---
+
+## 第 44 轮：修复 `_blake2` 与自作自受的 `PyErr_Occurred` 崩溃
+
+### 修复 1：`_blake2` 扩展原来链接了系统 libb2
+
+`ValueError: unsupported hash type blake2b` 让整个 `hashlib` 导入失败，
+进而拖垮文档打开。根因：
+
+```
+_blake2.cpython-311.so 的未定义符号:
+  blake2b_final  blake2b_init_param  blake2b_update  blake2s_final  blake2s_init_param
+```
+
+这些来自**系统 libb2** —— CPython 配置时若检测到 libb2 就会外部链接它
+（`PY_LIBB2`），而设备上没有 libb2 ⇒ `dlopen` 失败 ⇒ `ImportError`。
+
+**修法**：用 CPython 自带的参考实现重编这个扩展（不带 `PY_LIBB2`）：
+```bash
+clang --target=aarch64-none-linux-android24 --sysroot=$SYS -shared -fPIC -O2 -DNDEBUG \
+  -I$PYINC -I$SRC/Modules/_blake2 -I$SRC/Modules/_blake2/impl -I$SRC/Include \
+  $SRC/Modules/_blake2/blake2module.c \
+  $SRC/Modules/_blake2/blake2b_impl.c \
+  $SRC/Modules/_blake2/blake2s_impl.c \
+  $SRC/Modules/_blake2/impl/blake2b-ref.c \
+  $SRC/Modules/_blake2/impl/blake2s-ref.c \
+  -L$PYLIB -lpython3.11 -o _blake2.cpython-311.so
+```
+结果：90,648 → **38,848 字节**，**零未定义的非 Py 符号** ✓，
+并 bump `PY_ASSETS_VERSION` 到 5 触发重新解压。
+
+真机验证：`unsupported hash type blake2` 计数 **0** ✓，`spp` 步骤 **34** 全跑完。
+
+> 教训：必须把 `impl/blake2b-ref.c` 和 `impl/blake2s-ref.c` 一起编进去 ——
+> `blake2b_impl.c` 只是 CPython 的类型包装，真正实现 `blake2b_init_param` 等
+> 的是 `impl/` 里的参考实现。
+
+### 修复 2：我自己的诊断代码引入了一个 SIGSEGV
+
+```cpp
+catch (...) {
+    if (PyErr_Occurred()) { ... }   // ← 崩在这
+}
+```
+
+`PyErr_Occurred()` 内部解引用**当前线程状态**（`_PyThreadState_GET()`）。
+`processFiles()` 这条路径是从 `Gui::MainWindow::delayedStartup()` 经 Qt 事件
+调进来的，**那个线程没有附带 Python 线程状态** ⇒ 空指针。
+崩溃栈正是：
+
+```
+#07 libpython3.11.so (PyErr_Occurred+8)
+#08 libFreeCADApp.so (App::Application::processFiles(...))
+#09 libFreeCADGui.so (Gui::MainWindow::delayedStartup()+316)
+```
+
+**修法**：
+```cpp
+if (Py_IsInitialized() && PyGILState_GetThisThreadState() != nullptr
+    && PyErr_Occurred()) { ... }
+```
+
+> 教训：在非 Python 线程里不能直接碰 CPython 的 C API，先确认
+> `PyGILState_GetThisThreadState()` 非空。
