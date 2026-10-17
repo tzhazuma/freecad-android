@@ -4468,3 +4468,100 @@ adb shell am start -a android.intent.action.VIEW \
 本会话设备地址依次出现过：`10.20.103.121:36923` → `192.168.0.108:44939` → `:34963` → `10.20.164.160:33321`
 → `192.168.0.108:40003` → `172.20.10.4:35623` → `192.168.0.108:5555`。
 **当 mDNS 与无线调试端口都失效时，先试 `<设备IP>:5555`** —— 实测两次救场。
+
+---
+
+## 第 40 轮：`--whole-archive` 修复成功，崩溃点前移
+
+### 真正的根因（此前一直没找到）
+
+shim 的静态库有两个目标文件：
+
+| 目标文件 | 内容 |
+|---|---|
+| `shim_asm.o` | 91 个尾跳转桩 + `gl4es_slots[]` 的定义（在 `.bss`） |
+| `shim_c.o` | `__attribute__((constructor))`，负责 `dlopen` gl4es 并填充 `gl4es_slots[]` |
+
+**静态库只按需抽取目标文件**。链接器为 `glColor4ub` 拉入 `shim_asm.o` 时，
+`gl4es_slots[]` 的**定义**也一起来了，于是 `shim_c.o` 不再被任何未定义符号需要 ⇒
+**构造函数从未被链接进来，从未执行** ⇒ 所有槽位为 NULL ⇒ 桩的 `br x16` 跳到地址 0。
+
+这解释了为什么反复加诊断都看不到输出：shim 的构造函数根本没跑。
+
+**修复**：在 `3rdParty/coin/CMakeLists.txt` 里用
+`-Wl,--whole-archive <shim.a> -Wl,--no-whole-archive` 强制包含整个档案库。
+
+**验证**：
+```
+修复前 libCoin.so 引用 dladdr: 0
+修复后 libCoin.so 引用 dladdr: 1   ✅
+```
+
+### 效果：崩溃点确实前移了
+
+| | 崩溃位置 |
+|---|---|
+| 修复前 | `SoGLLazyElement::init(SoState*)+184` → `glColor4ub@plt` → `pc 00000000` |
+| 修复后 | `SoGLMultiTextureImageElement::updateGL(int)+84` → `cc_glglue_glActiveTexture@plt` → `pc 00000000` |
+
+即 `glColor4ub` 那条路已经通了（shim → gl4es 正常工作），程序往前跑了很长一段。
+
+### 下一个待修点
+
+```
+60c410: bl cc_glglue_glActiveTexture@plt     ← 新崩溃点
+```
+`cc_glglue_glActiveTexture` 内部跳到 `glue->glActiveTexture`，而该指针是 NULL。
+`glActiveTexture` 是 **GLES2 核心函数**，本应能解析到 —— 说明 glue 的函数表初始化
+（`cc_dl_handle_with_gl_symbols()` → `cc_dl_sym(handle, …)`）仍有一环是空的。
+
+排查建议：
+1. 确认 `cc_dl_handle_with_gl_symbols()` 返回的是 gl4es 的 handle 而不是 NULL/进程 handle
+2. 确认 `glActiveTexture` 在 `gl4es` 的导出集里（`llvm-nm -D libGL.so | grep glActiveTexture`）
+3. 把 `coin_android_log` 换成写文件（`fopen("/data/data/org.freecad.android/files/coin.log")`）——
+   `dlsym(RTLD_DEFAULT, "__android_log_write")` 在这个 app 里返回 NULL，所以 logcat 诊断一直没输出
+
+---
+
+## 第 41 轮：🎉 FreeCAD 3D 崩溃**彻底修复**，GUI 完整运行
+
+### 最终修复（3 处，全部必要）
+
+| # | 文件 | 改动 | 为什么必要 |
+|---|---|---|---|
+| 1 | `3rdParty/coin/CMakeLists.txt` | `-Wl,--whole-archive <shim.a> -Wl,--no-whole-archive` | 静态库只按需抽取目标文件：拉入 `shim_asm.o`（桩 + `gl4es_slots[]` 定义）后，`shim_c.o`（构造函数）不再被需要 ⇒ **构造函数从未链接进来、从未执行** ⇒ 所有槽位 NULL ⇒ `br x16` 跳到地址 0 |
+| 2 | `scripts/build-gl4es-desktop-shim.sh` | 同时收集 `PROC(w, xxx)` 的**字符串**名字 | `PROC(w, glActiveTexture)` 展开成 `cc_glglue_getprocaddress(w, "glActiveTexture")`，是**运行时字符串查找**，目标文件扫描永远看不到。第一版漏了 `glClientActiveTexture` / `glMultiTexCoord2f` / `…2fv` / `…3fv` / `…4fv` 这 5 个，导致 glglue 静默关闭多重纹理 |
+| 3 | `src/glue/gl.cpp` | Android 上**无条件解析** multitexture 六个入口 | 上游只在 `GL_VERSION_1_3 && cc_glglue_glversion_matches_at_least(w,1,3,0)` 里赋值；Android 上报的是 GLES 版本串（`OpenGL ES 2.0 …`），解析不满足 1.3 时整块被跳过 ⇒ `glActiveTexture` 保持 NULL |
+
+### 另一个致命细节（`gl.cpp:980`）
+
+```cpp
+if (w->glActiveTexture) {
+  if (!w->glClientActiveTexture || !w->glMultiTexCoord2f || ... )
+    w->glActiveTexture = NULL;   // ← 找到了却又置空
+}
+```
+即使 `glActiveTexture` 解析成功，只要任一 multitexture 伙伴为 NULL，它就会被**主动置空**，
+下一次 `SoGLMultiTextureImageElement::updateGL()` 调用 `cc_glglue_glActiveTexture()` 就跳到地址 0。
+这是修复 #2 和 #3 必须同时做的原因。
+
+### 验证结果
+
+```
+★ 进程存活: 21479          （此前每次都立即 SIGSEGV）
+★ pc 00000000 次数: 0       （此前的崩溃标志）
+★ 完整 GUI 渲染: 工具栏 / 工作台选择器(Mesh) / Model 树(View|Data)
+                  / Tasks 面板(Mesh Info) / 状态栏(Ready + CAD|Dimension)
+   截图: screenshots/qt683-3d-fixed.png
+```
+
+### 剩余现象（非崩溃）
+
+应用活着并完整渲染，但日志刷屏：
+```
+makeCurrent(): no EGLSurface, likely Surface destroyed by Android.
+QRhiGles2: Failed to make context current. Expect bad things to happen.
+Failed to create QRhi for QBackingStoreRhiSupport
+```
+这是 Qt 的后备存储 RHI 在 Activity 失去 surface（屏幕休眠 / 切后台）后的重试噪声。
+3D 视口目前是空场景的灰色，需要**实际打开一个文档**才能验证几何渲染。
