@@ -4813,3 +4813,32 @@ shim 构造函数未被链接（`--whole-archive`）、`PROC()` 字符串查找�
 `_blake2` 链了系统 libb2、`PyErr_Occurred` 在非 Python 线程崩溃。
 
 **FreeCAD 移植到 Android arm64-v8a 至此基本完成。**
+
+## 12. Open/Save against Android storage (2026-10-19)
+
+The rest of the ports in this project use the Storage Access Framework: one Open
+button, one Save button, one content:// URI each. FreeCAD cannot work that way --
+its dialogs live inside Qt, its Python API opens documents by *path*, and the
+workbenches read and write sidecar files beside the document.
+
+So the port does what Android provides for this shape of application: it asks for
+`MANAGE_EXTERNAL_STORAGE` ("All files access"). `MainActivity.ensureAllFilesAccess()`
+runs on every start, and when `Environment.isExternalStorageManager()` is false it
+opens the per-app settings screen (falling back to the global list on ROMs without
+one). Declining leaves the app running; it simply cannot see shared storage.
+
+Verified on the vivo PA2573 (Android 16, arm64-v8a), after granting the permission
+and cold-starting the app:
+
+    I FreeCAD : all-files access already granted
+    I FreeCAD : shared storage OK: /storage/emulated/0/Download entries=135 write=ok delete=true
+
+That line is printed by `probeSharedStorage()`, which performs the same plain
+`list()` / `write()` / `delete()` that FreeCAD's C++ does. It exists because the
+app-op alone is not evidence: the first grant reported `allow` while the running
+process still had a mount view without shared storage, and only a cold start picked
+it up.
+
+The launcher icon is FreeCAD's own artwork (`ic_launcher.png`, the F-in-gear mark),
+in all five density buckets plus an adaptive icon, so the APK looks like FreeCAD on
+the home screen and in the installer.

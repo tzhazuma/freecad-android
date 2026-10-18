@@ -105,6 +105,35 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
 
 
     /**
+     * Prove that the process really can read and write shared storage, and say so in the log.
+     *
+     * <p>{@code isExternalStorageManager()} being true is a statement about an app-op; it is
+     * not evidence that this process's mount view of {@code /storage/emulated/0} actually
+     * permits the calls FreeCAD makes. Those two can disagree -- they did here -- so the only
+     * honest check is to perform the same plain {@code open()}/{@code write()} that FreeCAD's
+     * C++ does and report the outcome.
+     */
+    private void probeSharedStorage() {
+        File dir = android.os.Environment
+                .getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+        File probe = new File(dir, ".freecad-storage-probe");
+        try {
+            String[] listing = dir.list();
+            try (OutputStream out = new FileOutputStream(probe)) {
+                out.write("freecad storage probe\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            boolean removed = probe.delete();
+            Log.i(TAG, "shared storage OK: " + dir + " entries="
+                    + (listing == null ? "unreadable" : Integer.toString(listing.length))
+                    + " write=ok delete=" + removed);
+        }
+        catch (Throwable t) {
+            Log.e(TAG, "shared storage NOT usable: " + dir, t);
+        }
+    }
+
+
+    /**
      * Ask for "All files access" so FreeCAD's own Open/Save dialogs can reach shared
      * storage.
      *
@@ -128,6 +157,7 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
         }
         if (android.os.Environment.isExternalStorageManager()) {
             Log.i(TAG, "all-files access already granted");
+            probeSharedStorage();
             return;
         }
         Log.i(TAG, "requesting all-files access");
