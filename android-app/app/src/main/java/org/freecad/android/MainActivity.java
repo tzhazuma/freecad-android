@@ -1,5 +1,6 @@
 package org.freecad.android;
 
+import android.content.Intent;
 import android.content.res.AssetManager;
 import android.os.Bundle;
 import android.util.Log;
@@ -99,6 +100,53 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
             Log.e(TAG, "failed to unpack the Python standard library", e);
         }
         super.onCreate(savedInstanceState);
+        ensureAllFilesAccess();
+    }
+
+
+    /**
+     * Ask for "All files access" so FreeCAD's own Open/Save dialogs can reach shared
+     * storage.
+     *
+     * <p>Every other port in this project routes file I/O through the Storage Access
+     * Framework. That works for a small app whose only file entry point is a single
+     * "Open"/"Save" button, because SAF hands back one URI that the app can read itself.
+     * FreeCAD is not that shape: its file dialogs live deep inside Qt, its Python API opens
+     * documents by path ({@code FreeCAD.open("/storage/emulated/0/x.FCStd")}), and the
+     * workbenches read and write sidecar files next to the document. Threading content://
+     * URIs through all of that is not possible.
+     *
+     * <p>{@code MANAGE_EXTERNAL_STORAGE} is the permission Android provides for exactly this
+     * case. It cannot be granted from a runtime dialog -- only from a settings screen -- so
+     * the check is {@code Environment.isExternalStorageManager()} and the prompt is an
+     * Intent. The app stays usable if the user declines; only shared storage is out of
+     * reach, and we re-ask on the next launch rather than silently doing nothing.
+     */
+    private void ensureAllFilesAccess() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
+            return;   // pre-R: the legacy READ/WRITE permissions in the manifest suffice
+        }
+        if (android.os.Environment.isExternalStorageManager()) {
+            Log.i(TAG, "all-files access already granted");
+            return;
+        }
+        Log.i(TAG, "requesting all-files access");
+        try {
+            startActivity(new Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    android.net.Uri.parse("package:" + getPackageName())));
+        }
+        catch (Throwable t) {
+            // Some vendors strip the per-app screen; the global list always exists.
+            Log.w(TAG, "per-app all-files screen unavailable: " + t);
+            try {
+                startActivity(new Intent(
+                        android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+            }
+            catch (Throwable t2) {
+                Log.w(TAG, "no all-files settings screen at all: " + t2);
+            }
+        }
     }
 
 

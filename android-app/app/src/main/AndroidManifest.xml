@@ -1,6 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+      FreeCAD is a desktop Qt application: its own Qt file dialogs are what open and save
+      documents, and they speak plain POSIX paths, not Storage Access Framework URIs. So
+      instead of routing every dialog through SAF, the port asks for the one permission that
+      makes ordinary paths work again: "All files access".
+
+      Without it, Android's scoped storage hides /storage/emulated/0 from the process, and
+      both Open and Save in FreeCAD can only reach the app's private directory.
+    -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- Pre-Android-11 devices grant the same reach through the legacy permissions. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
     <application
         android:label="FreeCAD"
         android:icon="@mipmap/ic_launcher"
