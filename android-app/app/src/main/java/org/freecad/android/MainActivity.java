@@ -134,6 +134,223 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
 
 
     /**
+     * Translate a Storage Access Framework {@code content://} URI into a plain filesystem
+     * path that FreeCAD's C++ can open.
+     *
+     * <p>Qt 6.7+ ships a native Android file-dialog helper
+     * ({@code QAndroidPlatformFileDialogHelper}) which launches the system picker with
+     * {@code ACTION_OPEN_DOCUMENT} / {@code ACTION_CREATE_DOCUMENT}. That is exactly the
+     * dialog the vivo ROM routes to {@code com.android.filemanager}, and it returns a
+     * {@code content://} URI. FreeCAD, however, opens documents by path: its C++ uses
+     * {@code std::ifstream}, OCCT and its Python API all take a filename. So the URI is
+     * resolved back to the real file behind it -- possible because this app also holds
+     * {@code MANAGE_EXTERNAL_STORAGE} -- and FreeCAD is handed the path.
+     *
+     * <p>Resolution order: the provider's {@code _data} column (covers Downloads, media and
+     * most vendor providers), then {@code DocumentsContract} ids ({@code primary:Download/x}
+     * from the external-storage provider, {@code raw:...} and {@code msf:<id>} from Downloads),
+     * and finally a cache copy for read-only Opens from a provider that exposes no path.
+     * Saves that cannot be resolved get a cache path plus a watcher that copies the finished
+     * document back to the URI.
+     */
+    public String resolveContentUri(String uriString, boolean forWrite) {
+        if (uriString == null) {
+            return null;
+        }
+        android.net.Uri uri;
+        try {
+            uri = android.net.Uri.parse(uriString);
+        }
+        catch (Throwable t) {
+            return uriString;
+        }
+        if (!"content".equals(uri.getScheme())) {
+            return uriString;
+        }
+
+        String path = queryDataColumn(uri);
+        if (path == null || path.isEmpty()) {
+            path = documentsContractPath(uri);
+        }
+        if (path != null && !path.isEmpty()) {
+            File file = new File(path);
+            if (file.exists() || forWrite) {
+                Log.i(TAG, "SAF resolved " + uriString + " -> " + path
+                        + " (exists=" + file.exists() + ", forWrite=" + forWrite + ")");
+                return path;
+            }
+        }
+
+        File cached = copyContentUriToCache(uri);
+        if (cached == null) {
+            Log.e(TAG, "SAF cannot resolve " + uriString);
+            return "";
+        }
+        Log.w(TAG, "SAF has no filesystem path for " + uriString
+                + "; using cache copy " + cached + " (forWrite=" + forWrite + ")");
+        if (forWrite) {
+            watchSaveBack(cached, uri);
+        }
+        return cached.getAbsolutePath();
+    }
+
+    /** Query the provider's _data column, the direct path to the document. */
+    private String queryDataColumn(android.net.Uri uri) {
+        try (android.database.Cursor c = getContentResolver().query(
+                uri,
+                new String[] {android.provider.MediaStore.MediaColumns.DATA},
+                null,
+                null,
+                null)) {
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(android.provider.MediaStore.MediaColumns.DATA);
+                if (idx >= 0 && !c.isNull(idx)) {
+                    return c.getString(idx);
+                }
+            }
+        }
+        catch (Throwable t) {
+            Log.w(TAG, "SAF _data query failed for " + uri + ": " + t);
+        }
+        return null;
+    }
+
+    /** Map the document ids used by the platform storage providers back to paths. */
+    private String documentsContractPath(android.net.Uri uri) {
+        String authority = uri.getAuthority();
+        try {
+            String docId = android.provider.DocumentsContract.getDocumentId(uri);
+            if (docId == null) {
+                return null;
+            }
+            if (docId.startsWith("raw:")) {
+                return docId.substring(4);
+            }
+            if ("com.android.externalstorage.documents".equals(authority)) {
+                int colon = docId.indexOf(':');
+                if (colon > 0) {
+                    String volume = docId.substring(0, colon);
+                    String relative = docId.substring(colon + 1);
+                    if ("primary".equalsIgnoreCase(volume)) {
+                        return "/storage/emulated/0/" + relative;
+                    }
+                    return "/storage/" + volume + "/" + relative;
+                }
+            }
+            if ("com.android.providers.downloads.documents".equals(authority)
+                    && docId.startsWith("msf:")) {
+                long id = Long.parseLong(docId.substring(4));
+                android.net.Uri media = android.content.ContentUris.withAppendedId(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, id);
+                return queryDataColumn(media);
+            }
+        }
+        catch (Throwable t) {
+            Log.w(TAG, "SAF document id lookup failed for " + uri + ": " + t);
+        }
+        return null;
+    }
+
+    /** Last resort for Open: materialise the document into the app cache. */
+    private File copyContentUriToCache(android.net.Uri uri) {
+        String name = null;
+        try (android.database.Cursor c = getContentResolver().query(
+                uri,
+                new String[] {android.provider.OpenableColumns.DISPLAY_NAME},
+                null,
+                null,
+                null)) {
+            if (c != null && c.moveToFirst()) {
+                name = c.getString(0);
+            }
+        }
+        catch (Throwable ignored) {
+            // Fall through to a generic name.
+        }
+        if (name == null || name.isEmpty()) {
+            name = "document";
+        }
+        name = name.replaceAll("[^A-Za-z0-9._-]", "_");
+
+        File dir = new File(getCacheDir(), "saf");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            return null;
+        }
+        File out = new File(dir, name);
+        if (out.exists() && !out.delete()) {
+            out = new File(dir, System.currentTimeMillis() + "-" + name);
+        }
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             OutputStream os = new FileOutputStream(out)) {
+            if (in == null) {
+                return null;
+            }
+            byte[] buffer = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buffer)) > 0) {
+                os.write(buffer, 0, n);
+            }
+            return out;
+        }
+        catch (Throwable t) {
+            Log.e(TAG, "SAF cache copy failed for " + uri, t);
+            return null;
+        }
+    }
+
+    /**
+     * For a Save whose URI cannot be mapped to a path: FreeCAD writes the cache file, and
+     * this daemon waits for the write to settle before copying it into the document.
+     */
+    private void watchSaveBack(File file, android.net.Uri uri) {
+        Thread thread = new Thread(() -> {
+            long lastSize = -1;
+            long lastModified = -1;
+            long stableSince = 0;
+            long deadline = System.currentTimeMillis() + 5 * 60 * 1000L;
+            while (System.currentTimeMillis() < deadline) {
+                long size = file.length();
+                long modified = file.lastModified();
+                long now = System.currentTimeMillis();
+                if (size > 0 && size == lastSize && modified == lastModified) {
+                    if (stableSince == 0) {
+                        stableSince = now;
+                    }
+                    else if (now - stableSince > 1500) {
+                        break;
+                    }
+                }
+                else {
+                    stableSince = 0;
+                    lastSize = size;
+                    lastModified = modified;
+                }
+                try {
+                    Thread.sleep(250);
+                }
+                catch (InterruptedException e) {
+                    return;
+                }
+            }
+            try (InputStream in = new java.io.FileInputStream(file);
+                 OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
+                byte[] buffer = new byte[64 * 1024];
+                int n;
+                while ((n = in.read(buffer)) > 0) {
+                    os.write(buffer, 0, n);
+                }
+                Log.i(TAG, "SAF copied " + file + " back to " + uri);
+            }
+            catch (Throwable t) {
+                Log.e(TAG, "SAF save-back failed for " + uri, t);
+            }
+        }, "saf-save-back");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+
+    /**
      * Ask for "All files access" so FreeCAD's own Open/Save dialogs can reach shared
      * storage.
      *
@@ -322,10 +539,34 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
     }
 
 
-    /** Copy one asset directory into an arbitrary destination. */
+    /**
+     * Copy one asset directory into an arbitrary destination, once per asset version.
+     *
+     * <p>These trees used to be deleted and recopied on <em>every</em> launch. {@code Mod}
+     * alone is ~80 MB of Python plus the workbench .so files copied in by
+     * {@link #linkWorkbenchLibraries()}, and {@code share} is another ~140 MB; doing that
+     * on the main thread in {@code onCreate} kept the UI unresponsive for well over
+     * Android's 5 s input-dispatch budget. The system then declared an ANR
+     * ("Input dispatching timed out ... MainActivity is not responding") and killed the
+     * port before the Qt window ever appeared.
+     *
+     * <p>The marker makes the extraction a first-launch cost again. Bumping
+     * {@link #PY_ASSETS_VERSION} invalidates it along with the Python payload.
+     */
     private void extractAssetDir(String assetPath, File dest) throws IOException {
+        File marker = new File(dest, ".assets-" + PY_ASSETS_VERSION);
+        if (marker.isFile() && dest.isDirectory()) {
+            Log.i(TAG, assetPath + " already unpacked at " + dest);
+            return;
+        }
         deleteRecursively(dest);
         int n = copyAssetTree(getAssets(), assetPath, dest);
+        if (!dest.isDirectory() && !dest.mkdirs()) {
+            throw new IOException("cannot create " + dest);
+        }
+        if (!marker.createNewFile()) {
+            Log.w(TAG, "could not create asset marker " + marker);
+        }
         Log.i(TAG, "unpacked " + n + " files into " + dest);
     }
 

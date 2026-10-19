@@ -4842,3 +4842,125 @@ it up.
 The launcher icon is FreeCAD's own artwork (`ic_launcher.png`, the F-in-gear mark),
 in all five density buckets plus an adaptive icon, so the APK looks like FreeCAD on
 the home screen and in the installer.
+
+## 13. SAF is now the Open/Save entry point (supersedes the all-files-only conclusion)
+
+Section 12 above concluded that SAF could not be threaded through FreeCAD and that
+`MANAGE_EXTERNAL_STORAGE` was the answer. That conclusion was half right: FreeCAD does
+need plain paths internally, but Qt 6.7+ already implements a native Android file
+dialog, so the SAF picker does not have to be bolted on beside Qt -- it *is* Qt's file
+dialog on this platform.
+
+### What Qt already does
+
+`qtbase/src/plugins/platforms/android/qandroidplatformfiledialoghelper.cpp` maps
+`QFileDialog` onto `ACTION_OPEN_DOCUMENT` / `ACTION_CREATE_DOCUMENT` (and
+`ACTION_OPEN_DOCUMENT_TREE` for directory modes). Qt 6.8.3 in this tree ships that
+helper in `libplugins_platforms_qtforandroid_arm64-v8a.so`; the strings
+`ACTION_OPEN_DOCUMENT`, `ACTION_CREATE_DOCUMENT` and
+`QtAndroidFileDialogHelper::QAndroidPlatformFileDialogHelper` are present. On this ROM
+the intent is served by vivo's file manager
+(`com.android.filemanager/.selector.view.SelectorHomeActivity`), not by
+`com.android.documentsui`.
+
+FreeCAD is built with `FREECAD_USE_QT_DIALOGS=OFF`, so
+`DialogOptions::dontUseNativeFileDialog()` is false by default and
+`FileDialogInternal::nativeFileDialog()` calls `QFileDialog::getOpenFileName()` /
+`getSaveFileName()`. The picker was therefore one URI-resolution step away from
+working all along.
+
+### The missing step: content:// -> path
+
+Qt returns `content://...` in `selectedFiles()` (`QUrl::PreferLocalFile` leaves a
+non-local URI untouched). FreeCAD's C++, OCCT and Python API all take filesystem
+paths. `MainActivity.resolveContentUri(uri, forWrite)` now resolves the URI:
+
+1. query the provider's `_data` column;
+2. otherwise map `DocumentsContract` ids (`primary:Download/x` and other volumes from
+   `com.android.externalstorage.documents`, `raw:/...` and `msf:<id>` from
+   `com.android.providers.downloads.documents`);
+3. otherwise copy the document to the app cache (Open) or return a cache path and
+   copy the finished file back to the URI when the write settles (Save).
+
+`src/Gui/FileDialog.cpp` calls that method at the single `nativeFileDialog()`
+boundary and passes the resulting path back to FreeCAD. The bridge is in the
+file-dialog layer, not in one workbench, so Import/Export and every workbench's
+Open/Save use it. `MANAGE_EXTERNAL_STORAGE` is still requested: it is what makes the
+resolved path readable/writable and keeps sidecar files working, but it is no longer
+the way the user chooses a file.
+
+The FreeCAD-side change is kept in `patches/freecad-gui/04-saf-file-dialog.patch`;
+the Java side is `android-app/.../MainActivity.java`.
+
+### Build
+
+- `libFreeCADGui.so`: 300 MB unstripped -> 24,973,568 B stripped, linked with the
+  bridge (`strings ... | grep resolveContentUri` = 1).
+- Debug APK: `android-app/app/build/outputs/apk/debug/app-debug.apk`, 406 MB,
+  `classes4.dex` contains `resolveContentUri`.
+- Release APK: `android-app/app/build/outputs/apk/release/app-release.apk`, 402 MB,
+  versionCode 2 / versionName 0.2.0, signed with the project release key
+  (`CN=FreeCAD for Android`), `classes.dex` contains `resolveContentUri`.
+
+### Device verification status
+
+The on-device round-trip (Open from Download, Save As back to Download, vivo
+`topResumedActivity`, `ls -l`/`cat`) is **not yet recorded** in this file. The phone
+left the Mac's network at 15:12 on 2026-10-19 (old address 192.168.0.108 no longer
+answers; mDNS advertised 10.20.102.50:32955 but `adb connect` returns offline and
+ICMP is blocked, consistent with eduroam client isolation). The code and APK are
+ready; the evidence lines will be appended once the device is reachable again.
+
+### 13.1 Start page, status-bar overlap and first-launch cost (2026-10-20)
+
+Three separate things made the app look like it "went straight inside" with no home
+page:
+
+1. `AndroidManifest.xml` passed
+   `/data/data/org.freecad.android/files/share/examples/PartDesignExample.FCStd` as a
+   bare argument after the `-M` module paths. FreeCAD's `main()` treats a bare argument
+   as a document to open, so the example loaded before the Start page could appear. The
+   argument is gone; only the `-M` paths remain.
+2. `MainGui.cpp` forced `StartWorkbench` to `MeshWorkbench` on Android because the first
+   builds could not activate PartDesign. It now uses `StartWorkbench`; the Start page is
+   a command/document in current FreeCAD and `StartMigrator` keeps `ShowOnStartup=true`.
+3. `targetSdk 35` enforces edge-to-edge, so FreeCAD's top toolbar (at y=0) sat *under*
+   the Android status bar: the clock and notification icons covered New/Open/Save and
+   made them untappable. `AppTheme` now sets
+   `android:windowOptOutEdgeToEdgeEnforcement=true`, which puts the Qt window below the
+   system bars. Verified by screenshot: the status bar is above the toolbar and the
+   folder (Open) icon is visible and tappable.
+
+`MainActivity.extractAssetDir()` also used to delete and recopy `Mod` (~80 MB) and
+`share` (~140 MB) on **every** launch, on the main thread in `onCreate`. That alone
+exceeded Android's 5 s input budget. Each tree now gets a `.assets-<PY_ASSETS_VERSION>`
+marker and is unpacked once.
+
+Evidence: `screenshots/freecad-start-page.png` (Start page on the vivo PA2573, status
+bar above the toolbar, workbench selector "Mesh" because `StartMigrator` migrates the
+retired StartWorkbench to the platform-safe Mesh workbench; the Start page itself is
+shown by `ShowOnStartup`).
+
+### 13.2 Device evidence for the picker (partial)
+
+Tapping FreeCAD's folder (Open) icon at (142,135) in the toolbar, with FreeCAD in the
+foreground and no other picker open, produced, three seconds later:
+
+    topResumedActivity=ActivityRecord{215931403 u0 com.android.filemanager/.selector.view.SelectorHomeActivity t719 d0}
+    pidof org.freecad.android  -> 24411 (alive at that instant)
+    pidof com.android.filemanager -> 12871
+
+This is the vivo picker the task calls for, launched from FreeCAD's own toolbar.
+
+The round-trip could not be completed because the phone is being driven by several
+other agents at the same time. While the picker is up, another agent injects taps or
+starts its own picker, and Android reports:
+
+    ANR: Input dispatching timed out (Window:... org.freecad.android/.MainActivity is
+         not responding. Waited 5000ms for FocusEvent(hasFocus=false)/MotionEvent)
+    process exit reason=6 (ANR), and on shutdown sometimes
+    FORTIFY: pthread_mutex_lock called on a destroyed mutex (SIGABRT)
+
+This is an environment/coordination problem first (input injected into a Qt window
+whose main thread is still starting up), not a build failure. The SAF bridge itself has
+not been exercised with a selected URI yet; that requires a quiet device window.

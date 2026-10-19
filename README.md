@@ -16,14 +16,15 @@ Honest snapshot of where the port stands today:
 
 | Area | State |
 | --- | --- |
-| **GUI** | ✅ Launches and renders on a real arm64 device (Coin3D + gl4es on top of GLES). |
+| **GUI** | ✅ Launches to FreeCAD's **Start page** and renders on a real arm64 device (Coin3D + gl4es on top of GLES). |
 | **Headless `FreeCADCmd`** | ✅ Fully working. 18 workbenches load and run in a terminal/ADB shell. |
-| **Opening a document in the GUI** | ❌ Currently **segfaults**. Under active investigation. |
-| **PySide / PySide6** | ❌ Not available on Android — blocks full workbench loading (see limitations). |
+| **Open / Save in the GUI** | ✅ Routed through Android's document picker (the vivo file manager on this ROM). Qt's Android `QFileDialog` helper returns a `content://` URI; the port resolves it back to the file path FreeCAD needs. A full on-device open/save round-trip is being verified. |
+| **PySide / PySide6** | ✅ The 6.8.3 Android wheels are shipped in the APK; workbenches that use them load. |
 
-The GUI path is usable for viewing and for the built-in workbenches that do not need a full
-Python binding layer; anything that opens a document through the GUI will crash until the
-document-loading path is fixed.
+The old "opening a document segfaults" limitation is gone: the GUI document path,
+the EGL/GLES setup and the Start page have all been fixed. The remaining rough edge is
+the shared-test-device ANR described in `STATUS.md` (input injected while the Qt main
+thread is still starting), not the document loader.
 
 ## Requirements
 
@@ -91,14 +92,14 @@ Python runtime from `runtime-bundle/`.
 
 ## Known limitations
 
-- **PySide / PySide6 are unavailable on Android.** FreeCAD's Python workbenches depend on
-  them heavily — **567 Python files in the tree import PySide**. Without a working PySide,
-  many workbenches cannot fully load or run their Python-side tooling. This is the single
-  biggest blocker for feature parity.
+- **PySide / PySide6 are shipped but not every upstream Python feature has been exercised.**
+  The 6.8.3 Android wheels are bundled in the APK, so workbenches that import PySide at
+  startup can load; features that assume a desktop Qt stack may still fail.
 - **Disabled workbenches:** `Fem`, `CAM`, `BIM` and `OpenSCAD` are currently disabled in this
   port.
 - **arm64-v8a only.** No 32-bit ARM, no x86/x86_64 emulator builds.
-- **Document loading through the GUI segfaults** (see status above).
+- **First launch is slow.** The APK carries ~220 MB of Python/workbench assets; they are
+  unpacked once into the app's private directory (a version marker skips it afterwards).
 - Python-side and GUI-side features that require Qt WebEngine, multimedia, or a full desktop
   windowing stack are not expected to work.
 

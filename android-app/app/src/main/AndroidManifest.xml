@@ -44,11 +44,12 @@
             -->
             <meta-data android:name="android.app.lib_name" android:value="FreeCAD" />
 
-            <!-- Arguments handed to main() as argv -->
-            <!-- The real test: drive FreeCAD's Python API through the Part workbench.
-               If this prints a volume, the whole port works end to end. -->
+            <!-- Arguments handed to main() as argv: only the workbench module paths.
+                 Do NOT append a document path here. FreeCAD treats a bare argument as a
+                 file to open, so the example .FCStd that used to be here made the app jump
+                 straight into a document and skip the Start page. -->
             <meta-data android:name="android.app.arguments"
-                android:value="-M /data/data/org.freecad.android/files/Mod -M /data/data/org.freecad.android/files/Mod/Assembly -M /data/data/org.freecad.android/files/Mod/Draft -M /data/data/org.freecad.android/files/Mod/Import -M /data/data/org.freecad.android/files/Mod/Inspection -M /data/data/org.freecad.android/files/Mod/Material -M /data/data/org.freecad.android/files/Mod/Measure -M /data/data/org.freecad.android/files/Mod/Mesh -M /data/data/org.freecad.android/files/Mod/Part -M /data/data/org.freecad.android/files/Mod/PartDesign -M /data/data/org.freecad.android/files/Mod/Points -M /data/data/org.freecad.android/files/Mod/ReverseEngineering -M /data/data/org.freecad.android/files/Mod/Robot -M /data/data/org.freecad.android/files/Mod/Sketcher -M /data/data/org.freecad.android/files/Mod/Spreadsheet -M /data/data/org.freecad.android/files/Mod/Start -M /data/data/org.freecad.android/files/Mod/Surface -M /data/data/org.freecad.android/files/Mod/TechDraw -M /data/data/org.freecad.android/files/Mod/Web /data/data/org.freecad.android/files/share/examples/PartDesignExample.FCStd " />
+                android:value="-M /data/data/org.freecad.android/files/Mod -M /data/data/org.freecad.android/files/Mod/Assembly -M /data/data/org.freecad.android/files/Mod/Draft -M /data/data/org.freecad.android/files/Mod/Import -M /data/data/org.freecad.android/files/Mod/Inspection -M /data/data/org.freecad.android/files/Mod/Material -M /data/data/org.freecad.android/files/Mod/Measure -M /data/data/org.freecad.android/files/Mod/Mesh -M /data/data/org.freecad.android/files/Mod/Part -M /data/data/org.freecad.android/files/Mod/PartDesign -M /data/data/org.freecad.android/files/Mod/Points -M /data/data/org.freecad.android/files/Mod/ReverseEngineering -M /data/data/org.freecad.android/files/Mod/Robot -M /data/data/org.freecad.android/files/Mod/Sketcher -M /data/data/org.freecad.android/files/Mod/Spreadsheet -M /data/data/org.freecad.android/files/Mod/Start -M /data/data/org.freecad.android/files/Mod/Surface -M /data/data/org.freecad.android/files/Mod/TechDraw -M /data/data/org.freecad.android/files/Mod/Web" />
 
             <!-- Qt's own metadata; harmless for a headless run -->
             <meta-data android:name="android.app.background_running" android:value="false" />

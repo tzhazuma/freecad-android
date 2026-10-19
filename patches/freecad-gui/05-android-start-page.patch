@@ -1,0 +1,26 @@
+--- a/src/Main/MainGui.cpp
++++ b/src/Main/MainGui.cpp
+@@ -219,15 +219,14 @@
+     App::Application::Config()["AppIcon"] = "freecad";
+     App::Application::Config()["SplashScreen"] = "freecadsplash";
+ #if defined(__ANDROID__)
+-    // Android-port: PartDesign's InitGui.py pulls in InvoluteGearFeature, which does
+-    // `from PySide import QtCore`. PySide (Shiboken6 + PySide6) has no Android support and
+-    // is therefore not built here, so activating PartDesignWorkbench would fail at startup:
+-    //   ModuleNotFoundError: No module named 'PySide'
+-    //   Failed to activate workbench 'PartDesignWorkbench'
+-    // That is not fatal any more, but the application would come up with no workbench at
+-    // all. MeshWorkbench is fully functional, has no PySide dependency, and still gives a
+-    // usable 3D view -- a far better default for this platform.
+-    App::Application::Config()["StartWorkbench"] = "MeshWorkbench";
++    // Android-port: start on the Start page, the same home screen desktop FreeCAD opens.
++    // The earlier port defaulted to MeshWorkbench because PartDesign's InitGui.py imports
++    // PySide and the first Android builds did not ship it. That had two bad consequences:
++    // the app jumped straight into a bare 3D view with no home screen, and command-line
++    // document arguments (the example .FCStd the manifest used to pass) opened a document
++    // before the user could choose one. StartWorkbench is the intended entry point; if it
++    // fails to activate, StartupProcess falls back to this same value rather than crashing.
++    App::Application::Config()["StartWorkbench"] = "StartWorkbench";
+ #else
+     App::Application::Config()["StartWorkbench"] = "PartDesignWorkbench";
+ #endif
