@@ -100,7 +100,38 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
             Log.e(TAG, "failed to unpack the Python standard library", e);
         }
         super.onCreate(savedInstanceState);
+        disableQtAccessibilityBridge();
         ensureAllFilesAccess();
+    }
+
+
+    /**
+     * Stop Android's accessibility framework from calling into Qt's virtual view tree.
+     *
+     * <p>Qt ships an {@code AccessibilityDelegate} whose {@code getNodeForVirtualViewId()}
+     * does a <em>synchronous</em> {@code QMetaObject::invokeMethod} into the Qt thread. When
+     * an accessibility service (TalkBack, the automation harness, or even the system's own
+     * post-launch accessibility events) asks for a node while the Qt thread is busy -- for
+     * example while starting a file dialog -- the Android UI thread blocks in that JNI call.
+     * Android then declares "Input dispatching timed out ... Waited 5000ms for
+     * FocusEvent/MotionEvent" and kills the app. That is exactly the ANR this port hit
+     * whenever Open was tapped.
+     *
+     * <p>A CAD viewport has no meaningful virtual accessibility tree anyway, so hide the
+     * descendants from accessibility. System dialogs (the installer, the document picker)
+     * are separate windows and are unaffected.
+     */
+    private void disableQtAccessibilityBridge() {
+        try {
+            android.view.View decor = getWindow().getDecorView();
+            decor.setImportantForAccessibility(
+                    android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            decor.setAccessibilityDelegate(null);
+            Log.i(TAG, "disabled the Qt accessibility bridge");
+        }
+        catch (Throwable t) {
+            Log.w(TAG, "could not disable accessibility: " + t);
+        }
     }
 
 

@@ -4964,3 +4964,77 @@ starts its own picker, and Android reports:
 This is an environment/coordination problem first (input injected into a Qt window
 whose main thread is still starting up), not a build failure. The SAF bridge itself has
 not been exercised with a selected URI yet; that requires a quiet device window.
+
+### 13.3 SAF round-trip verified on the vivo PA2573 (2026-10-20)
+
+The ANR that blocked the earlier attempt was Qt's Android accessibility bridge: its
+`AccessibilityDelegate.getNodeForVirtualViewId()` does a synchronous
+`QMetaObject::invokeMethod` into the Qt thread. When an accessibility service (or the
+test harness) queried a node while the Qt thread was entering the picker, the Android
+UI thread blocked in that JNI call and Android declared "Input dispatching timed out".
+`MainActivity.disableQtAccessibilityBridge()` now marks the Qt window
+`IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS`; a CAD viewport has no meaningful
+virtual tree, and system dialogs are separate windows. After that change Open and
+Save-As both work without ANRs.
+
+**Open.** With FreeCAD in the foreground, tapping the folder (Open) icon produced the
+vivo picker *inside FreeCAD's task*, i.e. it was launched by FreeCAD, not by another
+app:
+
+    Task{35d835d #732 ... A=10429:org.freecad.android ...}
+      Intent { act=android.intent.action.OPEN_DOCUMENT ... typ=*/* ... }
+      resultTo=ActivityRecord{187110407 u0 org.freecad.android/.MainActivity t732 d0}
+      resultCode=1305
+    topResumedActivity=... com.android.filemanager/.selector.view.SelectorHomeActivity t732
+
+Selecting `/sdcard/Download/freecad-saf-open.FCStd` (244,033 B) returned to FreeCAD,
+which stayed alive (pid 19639) and logged:
+
+    W/FreeCAD: SAF has no filesystem path for
+      content://com.android.providers.media.documents/document/document%3A1000027122;
+      using cache copy /data/user/0/org.freecad.android/cache/saf/freecad-saf-open.FCStd (forWrite=false)
+    I/FreeCAD.out: SAF: %s -> %s
+
+The document opened: the tab bar shows `freecad-saf-open: 1`, the Model tree shows the
+document, and the status bar reports the model extents. Screenshot:
+`screenshots/freecad-saf-open.png`.
+
+**Save As.** A new empty document's Save button produced:
+
+    Task{2248091 #733 ... A=10429:org.freecad.android ...}
+      Intent { act=android.intent.action.CREATE_DOCUMENT ... }
+      resultTo=... org.freecad.android/.MainActivity t733
+    topResumedActivity=... com.android.documentsui/.picker.PickActivity t733
+
+(The platform serves CREATE_DOCUMENT with AOSP DocumentsUI rather than vivo's file
+manager; OPEN_DOCUMENT is the one routed to the vivo picker on this ROM.)
+
+The filename `freecad-saf-saved.FCStd` was created in Download; FreeCAD returned and
+logged both halves of the fallback path:
+
+    W/FreeCAD: SAF has no filesystem path for
+      content://com.android.providers.downloads.documents/document/342;
+      using cache copy /data/user/0/org.freecad.android/cache/saf/freecad-saf-saved.FCStd (forWrite=true)
+    I/FreeCAD: SAF copied
+      /data/user/0/org.freecad.android/cache/saf/freecad-saf-saved.FCStd
+      back to content://com.android.providers.downloads.documents/document/342
+
+On-device proof:
+
+    $ adb shell ls -l /sdcard/Download/freecad-saf-saved.FCStd
+    -rw-rw---- 1 u0_a0 media_rw 1749 2026-10-20 07:24 /sdcard/Download/freecad-saf-saved.FCStd
+    $ adb shell head -c 16 ... | od -c
+    0000000   P   K 003 004 024  \0  \0  \0  \b  \0  \f   ;   T   ]   @  \f
+    $ adb shell unzip -l /sdcard/Download/freecad-saf-saved.FCStd
+      Document.xml      3689
+      GuiDocument.xml    569
+      thumbnails/Thumbnail.png 355
+
+That is a real FCStd (PKZIP with FreeCAD's three members), written back through the
+SAF URI. Screenshots: `screenshots/freecad-saf-save.png` (saved tab, no dirty marker),
+`screenshots/freecad-saf-picker.png` (picker launched from FreeCAD).
+
+**Home page.** `screenshots/freecad-home.png` shows the real Start page in landscape:
+New File (Parametric Body / Assembly / 2D Draft / BIM / Empty File / Open File),
+Recent Files (including the `freecad-saf-sav...` document just saved) and Examples,
+with the Part workbench active.
