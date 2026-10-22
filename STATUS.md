@@ -5038,3 +5038,43 @@ SAF URI. Screenshots: `screenshots/freecad-saf-save.png` (saved tab, no dirty ma
 New File (Parametric Body / Assembly / 2D Draft / BIM / Empty File / Open File),
 Recent Files (including the `freecad-saf-sav...` document just saved) and Examples,
 with the Part workbench active.
+
+## 2026-10-22：补上 `_socket` 和 `defusedxml`
+
+真机启动日志里每个工作台都在报：
+
+```
+During initialization the error "No module named 'defusedxml'" occurred in Mod/AddonManager/InitGui.py
+During initialization the error "No module named '_socket'"     occurred in Mod/Help/InitGui.py
+```
+
+排查结论：APK 里嵌的是 `libpython3.11.so`、资产也是 3.11，但 **FreeCAD 的 3.11 Android
+Python 构建根本没有产出 `_socket` 这个扩展模块**（prefix 里只有 3.13 那份有）。
+`defusedxml` 则不是标准库，从来没被打进去。
+
+**`_socket` 的编译方法**（从 CPython 3.11.9 源码补）：
+
+```sh
+NDK=~/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin
+INC=~/freecad-android/prefix/py311-arm64-v8a/include/python3.11
+cp src/cpython-3.11.9/Modules/socketmodule.c /tmp/socketmodule_android.c
+# bionic 定义了 AF_VSOCK 却没有 _IO，会把 #ifdef AF_VSOCK 那段编挂：
+# 把那一行改成 #if defined(AF_VSOCK) && defined(_IO)（那段只注册 ioctl 常量）
+$NDK/aarch64-linux-android31-clang -shared -fPIC -O2 \
+  -IModules -I$INC -IInclude -IInclude/internal \
+  /tmp/socketmodule_android.c -o _socket.cpython-311-aarch64-linux-android.so
+```
+
+产物 105 KB、导出 `PyInit__socket`。放进
+`assets/pylib/lib/python3.11/lib-dynload/`；`defusedxml` 建个 `site-packages/` 放进去。
+
+**真机验证**：重启后日志里 `No module named` 全部消失，进程稳定。
+
+### 仍然存在的两个问题
+
+1. `No module named 'MeshFlatteningCommand'` —— Mesh 工作台缺一个 Python 文件，尚未补。
+2. `(qt.qpa.input.methods) Touch event received for non-existing window 6`
+   —— **这就是「触摸不灵敏」的原因**：Qt 收到的触摸事件指向它不认识的窗口，事件被丢弃。
+   属于 Qt for Android 的输入窗口绑定问题，下一步查。
+
+另外：release 资产已用新包覆盖（402 MB），但**签名变了**，老用户需要先卸载再装。
