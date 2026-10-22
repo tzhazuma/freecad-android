@@ -159,3 +159,58 @@ Issues and pull requests are welcome, especially around:
 - additional ABIs.
 
 Please include device model, Android version, and a `logcat` capture with any bug report.
+
+---
+
+## Touch input: the stale window that eats taps
+
+Symptom: taps feel unreliable, and logcat repeats
+
+```
+(qt.qpa.input.methods) Touch event received for non-existing window 6
+```
+
+### What that warning means
+
+Qt routes touches by Android **view id**. Each top-level `QWindow` is backed by a Java
+`org.qtproject.qt.android.QtWindow`; `QtWindow.onTouchEvent` hands its id to
+`QtInputDelegate.sendTouchEvent`, and on the C++ side `androidjniinput.cpp` resolves it through
+`QtAndroid::windowFromId()`, which scans `QGuiApplication::allWindows()` for a
+`QAndroidPlatformWindow` whose `nativeViewId()` matches. When nothing matches, Qt prints that
+warning and **drops the event**.
+
+The view in question comes from Qt itself: `QtActivityDelegate.removeTopLevelWindow()` stashes
+the last window's view in `m_dummyView` and deliberately leaves it in the `QtRootLayout` until
+the next window is added. It is no longer in `m_topLevelWindows`, but it is still visible, so it
+sits above the real window and swallows touches meant for it.
+
+### Why FreeCAD and not the other ports
+
+FreeCAD is the only one of these Qt ports that creates extra top-level windows while starting:
+`StartupPostProcess::checkOpenGL()` builds and destroys a throwaway `QWindow`, and the splash
+handover mounts and tears down a `QSplashScreen` before the main window is shown. Octave and the
+minimal Qt probe have the same `MainActivity` shape and never print the warning.
+
+FreeCAD's `MainActivity` was not the problem: it has no `dispatchTouchEvent`, no
+`setContentView`, no added views, no surface callbacks.
+
+### The fix
+
+An audit runs on the UI thread at 6, 12, 20, 35 and 60 seconds after `super.onCreate`,
+reflects Qt's delegate (`m_layout`, `m_topLevelWindows`, `m_dummyView`), walks the
+`QtRootLayout`'s direct children and removes any `QtWindow` child that Qt no longer tracks —
+but only while a tracked live child remains, so the legitimate splash-handover dummy is never
+removed. Field lookups fail soft if a future Qt renames them.
+
+Verified on device: the hierarchy holds one `QtRootLayout` and one `QtWindow`, `dumpsys input`
+reports `responsive=true`, deliberate taps took `gfxinfo` from 97 to 99 frames and then to 151
+on a full repaint, and `non-existing window` appears zero times afterwards.
+
+Note that this ROM suppresses Java `Log.*` entirely, so the audit's own decisions never appear
+in logcat — `dumpsys` and `gfxinfo` are the evidence.
+
+### If the warning returns
+
+The remaining FreeCAD-specific trigger is `checkOpenGL()`'s throwaway `QWindow`. Skipping it on
+`Q_OS_ANDROID`, or replacing the `QWindow` with a `QOffscreenSurface` + `QOpenGLContext`, would
+remove that window from the handover entirely.
