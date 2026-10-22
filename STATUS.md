@@ -5078,3 +5078,54 @@ $NDK/aarch64-linux-android31-clang -shared -fPIC -O2 \
    属于 Qt for Android 的输入窗口绑定问题，下一步查。
 
 另外：release 资产已用新包覆盖（402 MB），但**签名变了**，老用户需要先卸载再装。
+
+## 2026-10-23：触摸不灵敏 —— 机制查清，僵死视图会被移除
+
+### 那条警告到底是什么意思（Qt 6.8.3）
+
+每个顶层 `QWindow` 对应一个 Java 的 `org.qtproject.qt.android.QtWindow`，
+它的 **Android view id 就是触摸路由的 key**：
+
+- `QtWindow.onTouchEvent` → `QtInputDelegate.sendTouchEvent(event, getId())`
+- C++ 侧 `androidjniinput.cpp:281` 用 `QtAndroid::windowFromId()`（`androidjnimain.cpp:130`）
+  在 `qGuiApp->allWindows()` 里找 `nativeViewId()` 等于该 id 的窗口
+- 找不到 → `qCWarning(lcQpaInputMethods, "Touch event received for non-existing window %d")`，
+  事件被丢弃
+
+所以警告的含义是：**一个 Java QtWindow 收到触摸，但没有活着的 QWindow 对应它**。
+
+### 僵死视图的来源
+
+Qt 自己的 `QtActivityDelegate.removeTopLevelWindow()`：最后一个顶层窗口被移除时，
+它把该视图存进 `m_dummyView` 并**故意留在 QtRootLayout 里**（直到下一个窗口加入才移除）。
+这个视图已不在 `m_topLevelWindows` 中，却仍然可见、盖在真窗口上面吃触摸。
+
+### FreeCAD 的 MainActivity 不是原因
+
+它没有 `dispatchTouchEvent`/`onTouchEvent`、没有 `setContentView`、没有额外 View。
+Octave 和 qt-repro 是同一种写法，也都不报这个警告。
+
+FreeCAD 特有的窗口扰动在别处：
+- `StartupPostProcess::checkOpenGL()`（src/Gui/StartupProcess.cpp:362）创建并销毁一个
+  一次性的顶层 QWindow；
+- `MainWindow::startSplasher()/stopSplasher()`（src/Gui/MainWindow.cpp:2278/2305）
+  在显示主窗口前挂载/拆除 QSplashScreen。
+
+启动时的这次交接就是 dummy 视图的来源。
+
+### 改动（只动了一个 Java 文件，+103 行）
+
+`super.onCreate` 之后在 UI 线程做一次审计（6/12/20/35/60 秒各跑一次）：
+反射 Qt delegate 的 `m_layout` / `m_topLevelWindows` / `m_dummyView`，
+遍历 QtRootLayout 的直接子 View，把 **Qt 已不追踪的 QtWindow 子 View 移除**；
+但只在仍有被追踪的活视图存在时才移除，保证合法的闪屏交接不被误删。
+
+### 真机证据
+
+- `dumpsys activity top`：只有一个 `QtRootLayout` + 一个 `QtWindow{#5}`，无多余 QtWindow
+- `dumpsys input`：FreeCAD 窗口 `responsive=true`
+- 定点点击：`gfxinfo` 帧数 97 → 99（Language 下拉）→ 151（主题缩略图，+52 帧整屏重绘）
+- `logcat | grep -c "non-existing window"` = **0**
+
+注意：这个 ROM 会完全吞掉 Java 的 `Log.*`，所以审计过程在 logcat 里看不到，
+只能靠 dumpsys/gfxinfo 取证。

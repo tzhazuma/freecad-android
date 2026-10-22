@@ -102,8 +102,111 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
         super.onCreate(savedInstanceState);
         disableQtAccessibilityBridge();
         ensureAllFilesAccess();
+        scheduleQtWindowAudit();
     }
 
+    /**
+     * Watch what Qt does with the Java views that carry touch input.
+     *
+     * <p>Qt 6.8's Android plugin creates one {@code org.qtproject.qt.android.QtWindow} view per
+     * top-level QWindow and routes every touch by that view's numeric Android id
+     * ({@code QtInputDelegate.sendTouchEvent(event, getId())}). The C++ side turns the id back
+     * into a QWindow by walking {@code QGuiApplication::allWindows()}
+     * ({@code androidjnimain.cpp:windowFromId}); when it finds none it drops the event and warns
+     * {@code Touch event received for non-existing window N}.
+     *
+     * <p>A view can outlive its QWindow: QtActivityDelegate deliberately keeps the last removed
+     * top-level window's view as {@code m_dummyView} in the layout (it removes it only when the
+     * next window is added). If that dummy is still visible it sits on top of the real window
+     * and eats every touch. So: delete any QtWindow child that Qt's own
+     * {@code m_topLevelWindows} map no longer tracks - but only while a tracked child remains,
+     * so a legitimate dummy during the splash-screen handover is left alone.
+     */
+    private void scheduleQtWindowAudit() {
+        android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        long[] delays = {6000, 12000, 20000, 35000, 60000};
+        for (long delay : delays) {
+            handler.postDelayed(this::auditQtWindows, delay);
+        }
+    }
+
+    private void auditQtWindows() {
+        try {
+            Object delegate = findField(this, "m_delegate");
+            Object layout = findField(delegate, "m_layout");
+            Object top = findField(delegate, "m_topLevelWindows");
+            Object dummy = findField(delegate, "m_dummyView");
+            java.util.Map<?, ?> live = (top instanceof java.util.Map) ? (java.util.Map<?, ?>) top : null;
+
+            Log.i(TAG, "QtWindow audit: layout=" + describe(layout)
+                    + " liveIds=" + (live == null ? "?" : live.keySet())
+                    + " dummy=" + describe(dummy));
+
+            if (!(layout instanceof android.view.ViewGroup) || live == null) {
+                return;
+            }
+            android.view.ViewGroup root = (android.view.ViewGroup) layout;
+            boolean haveLiveChild = false;
+            for (int i = 0; i < root.getChildCount(); i++) {
+                android.view.View child = root.getChildAt(i);
+                if (isQtWindow(child) && live.containsKey(child.getId())) {
+                    haveLiveChild = true;
+                }
+            }
+            if (!haveLiveChild) {
+                return;
+            }
+            for (int i = root.getChildCount() - 1; i >= 0; i--) {
+                android.view.View child = root.getChildAt(i);
+                if (!isQtWindow(child) || live.containsKey(child.getId())) {
+                    continue;
+                }
+                Log.w(TAG, "QtWindow audit: stale QtWindow view id=" + child.getId()
+                        + " visibility=" + child.getVisibility() + " " + describe(child)
+                        + " - removing (Qt has no such window; it would swallow touches)");
+                root.removeView(child);
+            }
+        }
+        catch (Throwable t) {
+            Log.w(TAG, "QtWindow audit failed", t);
+        }
+    }
+
+    private static boolean isQtWindow(android.view.View view) {
+        return "org.qtproject.qt.android.QtWindow".equals(view.getClass().getName());
+    }
+
+    private static String describe(Object o) {
+        if (!(o instanceof android.view.View)) {
+            return String.valueOf(o);
+        }
+        android.view.View v = (android.view.View) o;
+        return v.getClass().getSimpleName() + "{id=" + v.getId()
+                + ", vis=" + v.getVisibility()
+                + ", " + v.getWidth() + "x" + v.getHeight()
+                + ", at " + v.getLeft() + "," + v.getTop() + "}";
+    }
+
+    private static Object findField(Object target, String name) {
+        if (target == null) {
+            return null;
+        }
+        for (Class<?> clazz = target.getClass(); clazz != null; clazz = clazz.getSuperclass()) {
+            try {
+                java.lang.reflect.Field field = clazz.getDeclaredField(name);
+                field.setAccessible(true);
+                return field.get(target);
+            }
+            catch (NoSuchFieldException ignored) {
+                // Keep walking up; m_topLevelWindows lives in QtActivityDelegateBase.
+            }
+            catch (Throwable t) {
+                Log.w(TAG, "cannot read " + name + " from " + clazz.getName() + ": " + t);
+                return null;
+            }
+        }
+        return null;
+    }
 
     /**
      * Stop Android's accessibility framework from calling into Qt's virtual view tree.
