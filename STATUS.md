@@ -5129,3 +5129,17 @@ FreeCAD 特有的窗口扰动在别处：
 
 注意：这个 ROM 会完全吞掉 Java 的 `Log.*`，所以审计过程在 logcat 里看不到，
 只能靠 dumpsys/gfxinfo 取证。
+
+## 2026-10-23：触摸修复真机确认
+
+装上含审计的版本（`FreeCAD-android-arm64.apk`，402 MB）后：
+
+```
+pid=28860                                  进程存活
+TOP=org.freecad.android/.MainActivity      前台
+logcat | grep -c 'non-existing window' = 0 警告消失
+dumpsys input: responsive=true             输入通道正常
+gfxinfo: 81 → 137 帧（两次点击 +56 帧）      点击真的触发重绘
+```
+
+所以「触摸不灵敏」的两个判据都满足了：**警告消失**，且**点击确实被处理**。
