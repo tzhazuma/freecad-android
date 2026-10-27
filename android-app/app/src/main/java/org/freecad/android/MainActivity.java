@@ -49,7 +49,7 @@ public class MainActivity extends org.qtproject.qt.android.bindings.QtActivity {
      * still current: PySide6 and shiboken6 (extracted earlier) were present on disk,
      * the three new packages were not, and the app crashed in showMainWindow().
      */
-    private static final String PY_ASSETS_VERSION = "6";   // 6: Mesh/InitGui.py stops logging the absent flattening command
+    private static final String PY_ASSETS_VERSION = "7";   // 7: ship _socket under the importable name   // 6: Mesh/InitGui.py stops logging the absent flattening command
 
     /** Best-effort setenv; android.system.Os.setenv is available from API 21. */
     private static void setEnv(String name, String value) {
