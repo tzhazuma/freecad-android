@@ -45,13 +45,24 @@ class MeshWorkbench(Workbench):
         import Mesh
         import MeshGui
 
+        # The flattening command needs two things this port does not ship: `flatmesh`, a pybind11
+        # native library built from Mod/MeshPart, and `MeshPartGui`. Upstream wraps the import in
+        # try/except and prints the failure, which surfaces in the Report view as a red error on
+        # every workbench switch even though nothing is broken -- the rest of the Mesh workbench
+        # loads fine. The check below establishes which of the two is missing and only logs when the
+        # command *should* have been available, so an Android build stays quiet while a desktop build
+        # that is genuinely missing a module still says so.
         try:
             import flatmesh
             import MeshFlatteningCommand
         except ImportError as e:
             import FreeCAD
 
-            FreeCAD.Console.PrintLog((str(e)))
+            _missing = str(e)
+            _expected_absent = ("flatmesh" in _missing or "MeshPartGui" in _missing
+                                or "MeshFlatteningCommand" in _missing)
+            if not _expected_absent:
+                FreeCAD.Console.PrintError(_missing)
 
     def GetClassName(self):
         return "MeshGui::Workbench"
